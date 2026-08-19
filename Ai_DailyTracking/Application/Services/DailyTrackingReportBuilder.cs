@@ -26,7 +26,7 @@ public static class DailyTrackingReportBuilder
         };
     }
 
-    // Mirrors TrackingChartForm's default state: first date field, first option field, every option selected.
+    // Mirrors  TrackingChartForm's default state: first date field, first option field, every option selected.
     private static (string Title, IReadOnlyList<DateTime> Dates, IReadOnlyList<(string Label, IReadOnlyList<int> Counts)> Series) BuildDefaultChartSeries(TrackingProject project, TrackingFormSchema schema)
     {
         var dateField = schema.Fields.FirstOrDefault(field => field.Type == TrackingFieldType.Date);
