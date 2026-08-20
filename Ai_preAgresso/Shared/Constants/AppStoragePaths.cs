@@ -8,5 +8,8 @@ public static class AppStoragePaths
 
     public static string RootDirectory => RootPath;
 
+    // Default location used only until the user picks (or previously picked) a project file elsewhere.
     public static string EntriesFile => Path.Combine(RootPath, "entries.json");
+
+    public static string PreferencesFile => Path.Combine(RootPath, "preferences.json");
 }

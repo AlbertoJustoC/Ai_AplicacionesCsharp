@@ -15,8 +15,8 @@ public sealed class MainForm : Form
     private readonly NumericUpDown _yearUpDown = new() { Minimum = 2000, Maximum = 2100, Width = 70 };
     private readonly ComboBox _monthCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
     private readonly NumericUpDown _weekUpDown = new() { Minimum = 1, Maximum = 53, Width = 60 };
-    private readonly Button _pickWeekButton = new() { Text = "Elegir semana (calendario)" };
-    private readonly Button _currentWeekButton = new() { Text = "Semana actual" };
+    private readonly Button _pickWeekButton = new() { Text = "Elegir semana (calendario)", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+    private readonly Button _currentWeekButton = new() { Text = "Semana actual", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
     private readonly Label _dateRangeLabel = new() { AutoSize = true };
 
     private readonly DataGridView _weekGrid = new();
@@ -27,16 +27,22 @@ public sealed class MainForm : Form
     private readonly DataGridViewTextBoxColumn _horasColumn = new();
     private readonly DataGridViewComboBoxColumn _tipoColumn = new();
 
-    private readonly Button _addRowButton = new() { Text = "Añadir fila" };
-    private readonly Button _removeRowButton = new() { Text = "Eliminar fila" };
-    private readonly Button _saveButton = new() { Text = "Guardar semana" };
-    private readonly Button _viewListButton = new() { Text = "Ver listado completo" };
-    private readonly Button _importButton = new() { Text = "Importar Excel" };
+    private readonly Button _addRowButton = new() { Text = "Añadir fila", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+    private readonly Button _removeRowButton = new() { Text = "Eliminar fila", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+    private readonly Button _saveButton = new() { Text = "Guardar semana", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+    private readonly Button _viewListButton = new() { Text = "Ver listado completo", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
+    private readonly Button _changeProjectFileButton = new() { Text = "Archivo de proyecto...", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
     private readonly Label _totalHorasLabel = new() { AutoSize = true, Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold) };
     private readonly Label _statusLabel = new() { AutoSize = true, ForeColor = Color.Gray };
+    private readonly Label _projectFileLabel = new() { AutoSize = true, ForeColor = Color.Gray };
+    private readonly ToolTip _toolTip = new();
 
     private readonly Dictionary<string, DateOnly> _dayOptionsByDisplay = new(StringComparer.Ordinal);
-    private bool _suppressWeekReload;
+    private bool _suppressUiEvents;
+    private bool _isLoadingGrid;
+    private bool _isDirty;
+    private int _currentIsoYear;
+    private int _currentIsoWeek;
 
     public MainForm(AgressoWorkspaceService workspaceService, TimeEntryExcelService excelService)
     {
@@ -56,6 +62,7 @@ public sealed class MainForm : Form
 
         var today = DateOnly.FromDateTime(DateTime.Today);
         SetWeek(WeekPeriodCalculator.GetIsoYear(today), WeekPeriodCalculator.GetIsoWeek(today));
+        UpdateProjectFileLabel();
     }
 
     private void BuildLayout()
@@ -98,6 +105,17 @@ public sealed class MainForm : Form
         _pickWeekButton.Padding = new Padding(6, 4, 6, 4);
         _currentWeekButton.Margin = new Padding(0, 2, 16, 0);
         _currentWeekButton.Padding = new Padding(6, 4, 6, 4);
+
+        // Standard button faces read poorly against the dark navy panel; force a high-contrast look.
+        foreach (var navButton in new[] { _pickWeekButton, _currentWeekButton })
+        {
+            navButton.FlatStyle = FlatStyle.Flat;
+            navButton.BackColor = Color.FromArgb(35, 95, 145);
+            navButton.ForeColor = Color.White;
+            navButton.Font = new Font(Font, FontStyle.Bold);
+            navButton.FlatAppearance.BorderColor = Color.White;
+        }
+
         _dateRangeLabel.ForeColor = Color.White;
         _dateRangeLabel.Margin = new Padding(0, 8, 0, 0);
 
@@ -131,7 +149,9 @@ public sealed class MainForm : Form
 
         _proyectoColumn.HeaderText = "Proyecto";
         _proyectoColumn.Name = "Proyecto";
-        _proyectoColumn.Width = 220;
+        _proyectoColumn.MinimumWidth = 220;
+        _proyectoColumn.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _proyectoColumn.FillWeight = 100;
 
         _actividadColumn.HeaderText = "Actividad";
         _actividadColumn.Name = "Actividad";
@@ -139,7 +159,9 @@ public sealed class MainForm : Form
 
         _descripcionColumn.HeaderText = "Descripción";
         _descripcionColumn.Name = "Descripcion";
-        _descripcionColumn.Width = 300;
+        _descripcionColumn.MinimumWidth = 300;
+        _descripcionColumn.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _descripcionColumn.FillWeight = 200;
 
         _horasColumn.HeaderText = "Horas";
         _horasColumn.Name = "Horas";
@@ -169,19 +191,32 @@ public sealed class MainForm : Form
         buttonsFlow.Controls.Add(_removeRowButton);
         buttonsFlow.Controls.Add(_saveButton);
         buttonsFlow.Controls.Add(_viewListButton);
-        buttonsFlow.Controls.Add(_importButton);
         foreach (Control button in buttonsFlow.Controls)
         {
             button.Margin = new Padding(0, 0, 8, 0);
             button.Padding = new Padding(8, 4, 8, 4);
         }
 
+        // Distinct color/position from the work buttons since it manages the project file, not the current week.
+        _changeProjectFileButton.FlatStyle = FlatStyle.Flat;
+        _changeProjectFileButton.BackColor = Color.FromArgb(120, 80, 150);
+        _changeProjectFileButton.ForeColor = Color.White;
+        _changeProjectFileButton.FlatAppearance.BorderColor = Color.FromArgb(90, 60, 115);
+        _changeProjectFileButton.Margin = new Padding(0, 0, 0, 6);
+        _changeProjectFileButton.Padding = new Padding(8, 4, 8, 4);
+        _changeProjectFileButton.Anchor = AnchorStyles.Right;
+
         var statusFlow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, Anchor = AnchorStyles.Right };
         statusFlow.Controls.Add(_totalHorasLabel);
         statusFlow.Controls.Add(_statusLabel);
+        statusFlow.Controls.Add(_projectFileLabel);
+
+        var rightFlow = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, Anchor = AnchorStyles.Right, WrapContents = false };
+        rightFlow.Controls.Add(_changeProjectFileButton);
+        rightFlow.Controls.Add(statusFlow);
 
         panel.Controls.Add(buttonsFlow, 0, 0);
-        panel.Controls.Add(statusFlow, 1, 0);
+        panel.Controls.Add(rightFlow, 1, 0);
 
         return panel;
     }
@@ -190,17 +225,18 @@ public sealed class MainForm : Form
     {
         _yearUpDown.ValueChanged += (_, _) => ReloadIfNotSuppressed();
         _weekUpDown.ValueChanged += (_, _) => ReloadIfNotSuppressed();
+        _monthCombo.SelectedIndexChanged += (_, _) => MonthCombo_SelectedIndexChanged();
         _currentWeekButton.Click += (_, _) =>
         {
             var today = DateOnly.FromDateTime(DateTime.Today);
-            SetWeek(WeekPeriodCalculator.GetIsoYear(today), WeekPeriodCalculator.GetIsoWeek(today));
+            RequestWeekChange(WeekPeriodCalculator.GetIsoYear(today), WeekPeriodCalculator.GetIsoWeek(today));
         };
         _pickWeekButton.Click += PickWeekButton_Click;
         _addRowButton.Click += (_, _) => AddRowButton_Click();
         _removeRowButton.Click += RemoveRowButton_Click;
         _saveButton.Click += (_, _) => SaveWeek();
         _viewListButton.Click += (_, _) => OpenListado();
-        _importButton.Click += (_, _) => ImportFromExcel();
+        _changeProjectFileButton.Click += (_, _) => ChangeProjectFile();
 
         _weekGrid.CurrentCellDirtyStateChanged += (_, _) =>
         {
@@ -214,6 +250,10 @@ public sealed class MainForm : Form
             if (e.RowIndex >= 0)
             {
                 UpdateTotalHoras();
+                if (!_isLoadingGrid)
+                {
+                    _isDirty = true;
+                }
             }
         };
         _weekGrid.RowPrePaint += WeekGrid_RowPrePaint;
@@ -222,20 +262,90 @@ public sealed class MainForm : Form
 
     private void ReloadIfNotSuppressed()
     {
-        if (_suppressWeekReload)
+        if (_suppressUiEvents)
         {
             return;
         }
-        LoadWeek((int)_yearUpDown.Value, (int)_weekUpDown.Value);
+
+        var isoYear = (int)_yearUpDown.Value;
+        var isoWeek = WeekPeriodCalculator.ClampIsoWeek(isoYear, (int)_weekUpDown.Value);
+        if (isoWeek != (int)_weekUpDown.Value)
+        {
+            _suppressUiEvents = true;
+            _weekUpDown.Value = isoWeek;
+            _suppressUiEvents = false;
+        }
+
+        RequestWeekChange(isoYear, isoWeek);
+    }
+
+    private void MonthCombo_SelectedIndexChanged()
+    {
+        if (_suppressUiEvents || _monthCombo.SelectedIndex < 0)
+        {
+            return;
+        }
+
+        var target = new DateOnly((int)_yearUpDown.Value, _monthCombo.SelectedIndex + 1, 1);
+        RequestWeekChange(WeekPeriodCalculator.GetIsoYear(target), WeekPeriodCalculator.GetIsoWeek(target));
+    }
+
+    // Gatekeeper for every week-navigation entry point: warns about unsaved changes
+    // before actually switching, and never saves automatically.
+    private void RequestWeekChange(int isoYear, int isoWeek)
+    {
+        var clampedYear = Math.Clamp(isoYear, (int)_yearUpDown.Minimum, (int)_yearUpDown.Maximum);
+        var clampedWeek = WeekPeriodCalculator.ClampIsoWeek(clampedYear, isoWeek);
+
+        if (clampedYear == _currentIsoYear && clampedWeek == _currentIsoWeek)
+        {
+            return;
+        }
+
+        if (_isDirty)
+        {
+            var choice = MessageBox.Show(
+                this,
+                "La semana activa tiene cambios sin guardar. ¿Quieres guardarlos antes de cambiar de semana?",
+                "Cambios sin guardar",
+                MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Warning);
+
+            if (choice == DialogResult.Cancel)
+            {
+                RevertWeekSelectorsToCurrent();
+                return;
+            }
+
+            if (choice == DialogResult.Yes)
+            {
+                SaveWeek(_currentIsoYear, _currentIsoWeek);
+            }
+        }
+
+        SetWeek(clampedYear, clampedWeek);
+    }
+
+    private void RevertWeekSelectorsToCurrent()
+    {
+        _suppressUiEvents = true;
+        _yearUpDown.Value = _currentIsoYear;
+        _weekUpDown.Value = _currentIsoWeek;
+        _monthCombo.SelectedIndex = WeekPeriodCalculator.GetMonday(_currentIsoYear, _currentIsoWeek).Month - 1;
+        _suppressUiEvents = false;
     }
 
     private void SetWeek(int isoYear, int isoWeek)
     {
-        _suppressWeekReload = true;
-        _yearUpDown.Value = Math.Clamp(isoYear, (int)_yearUpDown.Minimum, (int)_yearUpDown.Maximum);
-        _weekUpDown.Value = Math.Clamp(isoWeek, (int)_weekUpDown.Minimum, (int)_weekUpDown.Maximum);
-        _suppressWeekReload = false;
-        LoadWeek((int)_yearUpDown.Value, (int)_weekUpDown.Value);
+        var clampedYear = Math.Clamp(isoYear, (int)_yearUpDown.Minimum, (int)_yearUpDown.Maximum);
+        var clampedWeek = WeekPeriodCalculator.ClampIsoWeek(clampedYear, isoWeek);
+
+        _suppressUiEvents = true;
+        _yearUpDown.Value = clampedYear;
+        _weekUpDown.Value = clampedWeek;
+        _suppressUiEvents = false;
+
+        LoadWeek(clampedYear, clampedWeek);
     }
 
     private void PickWeekButton_Click(object? sender, EventArgs e)
@@ -244,7 +354,7 @@ public sealed class MainForm : Form
         using var popup = new WeekPickerPopup(currentMonday);
         if (popup.ShowDialog(this) == DialogResult.OK)
         {
-            SetWeek(
+            RequestWeekChange(
                 WeekPeriodCalculator.GetIsoYear(popup.SelectedMonday),
                 WeekPeriodCalculator.GetIsoWeek(popup.SelectedMonday));
         }
@@ -252,54 +362,98 @@ public sealed class MainForm : Form
 
     private void LoadWeek(int isoYear, int isoWeek)
     {
-        var weekdays = WeekPeriodCalculator.GetWeekdays(isoYear, isoWeek);
-
-        _dayOptionsByDisplay.Clear();
-        _diaColumn.Items.Clear();
-        foreach (var day in weekdays)
+        _isLoadingGrid = true;
+        try
         {
-            var display = WeekPeriodCalculator.FormatDiaCorto(day);
-            _dayOptionsByDisplay[display] = day;
-            _diaColumn.Items.Add(display);
-        }
+            var weekdays = WeekPeriodCalculator.GetWeekdays(isoYear, isoWeek);
 
-        _monthCombo.SelectedIndex = weekdays[0].Month - 1;
-        _dateRangeLabel.Text = $"{weekdays[0]:dd/MM/yyyy} - {weekdays[^1]:dd/MM/yyyy}";
+            // Rows must be cleared before the Día combo's Items change, otherwise the grid tries to
+            // validate old rows against the new (unrelated) week's items and throws.
+            _weekGrid.Rows.Clear();
 
-        var entries = _workspaceService.GetEntriesForWeek(isoYear, isoWeek).OrderBy(entry => entry.Fecha).ToList();
-
-        _weekGrid.Rows.Clear();
-        foreach (var entry in entries)
-        {
-            AddGridRow(entry, entry.Fecha);
-        }
-
-        // Guarantee a baseline row for every weekday, even if nothing has been entered yet.
-        foreach (var day in weekdays)
-        {
-            if (!entries.Any(entry => entry.Fecha == day))
+            _dayOptionsByDisplay.Clear();
+            _diaColumn.Items.Clear();
+            foreach (var day in weekdays)
             {
-                AddGridRow(null, day);
+                var display = WeekPeriodCalculator.FormatDiaCorto(day);
+                _dayOptionsByDisplay[display] = day;
+                _diaColumn.Items.Add(display);
             }
+
+            _suppressUiEvents = true;
+            _monthCombo.SelectedIndex = weekdays[0].Month - 1;
+            _suppressUiEvents = false;
+
+            _dateRangeLabel.Text = $"{weekdays[0]:dd/MM/yyyy} - {weekdays[^1]:dd/MM/yyyy}";
+
+            var entries = _workspaceService.GetEntriesForWeek(isoYear, isoWeek).OrderBy(entry => entry.Fecha).ToList();
+
+            foreach (var entry in entries)
+            {
+                AddGridRow(entry, entry.Fecha);
+            }
+
+            // Guarantee a baseline row for every weekday, even if nothing has been entered yet.
+            foreach (var day in weekdays)
+            {
+                if (!entries.Any(entry => entry.Fecha == day))
+                {
+                    AddGridRow(null, day);
+                }
+            }
+
+            UpdateTotalHoras();
+        }
+        finally
+        {
+            _isLoadingGrid = false;
         }
 
-        UpdateTotalHoras();
+        _currentIsoYear = isoYear;
+        _currentIsoWeek = isoWeek;
+        _isDirty = false;
     }
 
     private void AddRowButton_Click()
     {
-        var defaultDate = _dayOptionsByDisplay.Count > 0
-            ? _dayOptionsByDisplay.Values.Min()
-            : DateOnly.FromDateTime(DateTime.Today);
-        AddGridRow(null, defaultDate);
+        var selectedRow = _weekGrid.CurrentRow ?? _weekGrid.SelectedRows.Cast<DataGridViewRow>().FirstOrDefault();
+        int insertAt;
+        DateOnly date;
+
+        if (selectedRow is not null
+            && selectedRow.Cells[_diaColumn.Index].Value is string diaDisplay
+            && _dayOptionsByDisplay.TryGetValue(diaDisplay, out var selectedDate))
+        {
+            insertAt = selectedRow.Index + 1;
+            date = selectedDate;
+        }
+        else
+        {
+            insertAt = _weekGrid.Rows.Count;
+            date = _dayOptionsByDisplay.Count > 0 ? _dayOptionsByDisplay.Values.Min() : DateOnly.FromDateTime(DateTime.Today);
+        }
+
+        AddGridRow(null, date, insertAt);
+        UpdateTotalHoras();
+        _weekGrid.CurrentCell = _weekGrid.Rows[insertAt].Cells[_proyectoColumn.Index];
     }
 
-    private void AddGridRow(TimeEntry? entry, DateOnly date)
+    private void AddGridRow(TimeEntry? entry, DateOnly date, int? insertAt = null)
     {
-        var index = _weekGrid.Rows.Add();
+        int index;
+        if (insertAt.HasValue && insertAt.Value >= 0 && insertAt.Value < _weekGrid.Rows.Count)
+        {
+            _weekGrid.Rows.Insert(insertAt.Value);
+            index = insertAt.Value;
+        }
+        else
+        {
+            index = _weekGrid.Rows.Add();
+        }
         var row = _weekGrid.Rows[index];
         row.Tag = entry?.Id;
         row.Cells[_diaColumn.Index].Value = WeekPeriodCalculator.FormatDiaCorto(date);
+        row.Cells[_diaColumn.Index].Style.Font = new Font(_weekGrid.Font, BoldDiaDays.Contains(date.DayOfWeek) ? FontStyle.Bold : FontStyle.Regular);
         row.Cells[_proyectoColumn.Index].Value = entry?.Proyecto ?? string.Empty;
         row.Cells[_actividadColumn.Index].Value = entry?.Actividad ?? string.Empty;
         row.Cells[_descripcionColumn.Index].Value = entry?.Descripcion ?? string.Empty;
@@ -309,10 +463,17 @@ public sealed class MainForm : Form
 
     private void RemoveRowButton_Click(object? sender, EventArgs e)
     {
-        foreach (DataGridViewRow row in _weekGrid.SelectedRows.Cast<DataGridViewRow>().ToList())
+        var rowsToRemove = _weekGrid.SelectedRows.Cast<DataGridViewRow>().ToList();
+        if (rowsToRemove.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var row in rowsToRemove)
         {
             _weekGrid.Rows.Remove(row);
         }
+        _isDirty = true;
         UpdateTotalHoras();
     }
 
@@ -326,6 +487,8 @@ public sealed class MainForm : Form
         var tipoText = row.Cells[_tipoColumn.Index].Value as string;
         row.DefaultCellStyle.BackColor = GetRowColor(tipoText);
     }
+
+    private static readonly DayOfWeek[] BoldDiaDays = { DayOfWeek.Monday, DayOfWeek.Wednesday, DayOfWeek.Friday };
 
     private static Color GetRowColor(string? tipoText) => tipoText switch
     {
@@ -386,10 +549,10 @@ public sealed class MainForm : Form
             || double.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out horas);
     }
 
-    private void SaveWeek()
+    private void SaveWeek() => SaveWeek((int)_yearUpDown.Value, (int)_weekUpDown.Value);
+
+    private void SaveWeek(int isoYear, int isoWeek)
     {
-        var isoYear = (int)_yearUpDown.Value;
-        var isoWeek = (int)_weekUpDown.Value;
         var entries = new List<TimeEntry>();
 
         foreach (DataGridViewRow row in _weekGrid.Rows)
@@ -431,24 +594,55 @@ public sealed class MainForm : Form
         form.ShowDialog(this);
     }
 
-    private void ImportFromExcel()
+    private void ChangeProjectFile()
     {
-        using var dialog = new OpenFileDialog { Filter = "Excel (*.xlsx)|*.xlsx", Title = "Importar tareas desde Excel" };
+        if (_isDirty)
+        {
+            var choice = MessageBox.Show(
+                this,
+                "La semana activa tiene cambios sin guardar. ¿Quieres guardarlos antes de cambiar de archivo de proyecto?",
+                "Cambios sin guardar",
+                MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Warning);
+
+            if (choice == DialogResult.Cancel)
+            {
+                return;
+            }
+
+            if (choice == DialogResult.Yes)
+            {
+                SaveWeek(_currentIsoYear, _currentIsoWeek);
+            }
+        }
+
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Seleccionar archivo de proyecto",
+            Filter = "Archivo de proyecto (*.json)|*.json|Todos los archivos (*.*)|*.*",
+            DefaultExt = "json",
+            CheckFileExists = false,
+            CheckPathExists = true,
+            FileName = Path.GetFileName(_workspaceService.CurrentProjectFilePath),
+            InitialDirectory = Path.GetDirectoryName(_workspaceService.CurrentProjectFilePath)
+        };
+
         if (dialog.ShowDialog(this) != DialogResult.OK)
         {
             return;
         }
 
-        try
-        {
-            var imported = _excelService.Import(dialog.FileName);
-            _workspaceService.ImportEntries(imported);
-            LoadWeek((int)_yearUpDown.Value, (int)_weekUpDown.Value);
-            _statusLabel.Text = $"Importadas {imported.Count} filas desde Excel";
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, $"No se pudo importar el archivo:\n{ex.Message}", "Error de importación", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
+        _workspaceService.SwitchProjectFile(dialog.FileName);
+        UpdateProjectFileLabel();
+        LoadWeek(_currentIsoYear, _currentIsoWeek);
+        _statusLabel.Text = $"Proyecto cambiado a {Path.GetFileName(dialog.FileName)}";
     }
+
+    private void UpdateProjectFileLabel()
+    {
+        var path = _workspaceService.CurrentProjectFilePath;
+        _projectFileLabel.Text = $"Archivo: {Path.GetFileName(path)}";
+        _toolTip.SetToolTip(_projectFileLabel, path);
+    }
+
 }

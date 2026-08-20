@@ -6,13 +6,28 @@ namespace Ai_preAgresso.Application.Services;
 public sealed class AgressoWorkspaceService
 {
     private readonly TimeEntryRepository _repository;
+    private readonly AppPreferencesRepository _preferencesRepository;
 
     public AutoCompleteProvider AutoComplete { get; } = new();
 
-    public AgressoWorkspaceService(TimeEntryRepository repository)
+    public AgressoWorkspaceService(TimeEntryRepository repository, AppPreferencesRepository preferencesRepository)
     {
         _repository = repository;
+        _preferencesRepository = preferencesRepository;
         AutoComplete.Refresh(_repository.LoadAll());
+    }
+
+    public string CurrentProjectFilePath => _repository.CurrentFilePath;
+
+    // Points the app at a different project file, remembers it as the default for the next launch, and refreshes autocomplete.
+    public void SwitchProjectFile(string filePath)
+    {
+        _repository.SetFilePath(filePath);
+        AutoComplete.Refresh(GetAllEntries());
+
+        var preferences = _preferencesRepository.Load();
+        preferences.LastProjectFilePath = filePath;
+        _preferencesRepository.Save(preferences);
     }
 
     public List<TimeEntry> GetAllEntries() => _repository.LoadAll();

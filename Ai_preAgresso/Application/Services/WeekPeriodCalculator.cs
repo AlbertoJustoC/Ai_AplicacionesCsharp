@@ -13,8 +13,12 @@ public static class WeekPeriodCalculator
 
     public static int GetIsoWeek(DateOnly date) => ISOWeek.GetWeekOfYear(date.ToDateTime(TimeOnly.MinValue));
 
+    public static int ClampIsoWeek(int isoYear, int isoWeek) =>
+        Math.Clamp(isoWeek, 1, ISOWeek.GetWeeksInYear(isoYear));
+
+    // Some years only have 52 ISO weeks; clamp so callers (e.g. after a year change) never hit ISOWeek's range check.
     public static DateOnly GetMonday(int isoYear, int isoWeek) =>
-        DateOnly.FromDateTime(ISOWeek.ToDateTime(isoYear, isoWeek, DayOfWeek.Monday));
+        DateOnly.FromDateTime(ISOWeek.ToDateTime(isoYear, ClampIsoWeek(isoYear, isoWeek), DayOfWeek.Monday));
 
     public static DateOnly[] GetWeekdays(int isoYear, int isoWeek)
     {
