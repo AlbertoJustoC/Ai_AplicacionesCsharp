@@ -51,6 +51,7 @@ public sealed class ListadoForm : Form
         _excelService = excelService;
 
         Text = "Listado completo - Agresso";
+        Icon = Ai_preAgresso.Shared.Helpers.AppIconProvider.Current;
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(1100, 650);
         Size = new Size(1200, 700);

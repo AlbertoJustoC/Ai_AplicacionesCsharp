@@ -16,6 +16,7 @@ public sealed class HorasPieChartForm : Form
         _entries = entries;
 
         Text = "Gráfico de horas (quesitos)";
+        Icon = Ai_preAgresso.Shared.Helpers.AppIconProvider.Current;
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(760, 520);
         Size = new Size(820, 560);

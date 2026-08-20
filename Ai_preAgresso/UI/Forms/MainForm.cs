@@ -50,6 +50,7 @@ public sealed class MainForm : Form
         _excelService = excelService;
 
         Text = "Agresso - Registro semanal de tareas";
+        Icon = Ai_preAgresso.Shared.Helpers.AppIconProvider.Current;
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1200, 720);
         Size = new Size(1300, 820);
@@ -258,6 +259,8 @@ public sealed class MainForm : Form
         };
         _weekGrid.RowPrePaint += WeekGrid_RowPrePaint;
         _weekGrid.EditingControlShowing += WeekGrid_EditingControlShowing;
+        _weekGrid.CellValidating += WeekGrid_CellValidating;
+        _weekGrid.CellEndEdit += WeekGrid_CellEndEdit;
     }
 
     private void ReloadIfNotSuppressed()
@@ -457,7 +460,7 @@ public sealed class MainForm : Form
         row.Cells[_proyectoColumn.Index].Value = entry?.Proyecto ?? string.Empty;
         row.Cells[_actividadColumn.Index].Value = entry?.Actividad ?? string.Empty;
         row.Cells[_descripcionColumn.Index].Value = entry?.Descripcion ?? string.Empty;
-        row.Cells[_horasColumn.Index].Value = entry is null ? string.Empty : entry.Horas.ToString("0.##", CultureInfo.CurrentCulture);
+        row.Cells[_horasColumn.Index].Value = entry is null ? string.Empty : entry.Horas.ToString("0.##", CultureInfo.InvariantCulture);
         row.Cells[_tipoColumn.Index].Value = TipoDisplayNames[(int)(entry?.Tipo ?? TipoJornada.Normal)];
     }
 
@@ -523,6 +526,50 @@ public sealed class MainForm : Form
         textBox.AutoCompleteCustomSource = source;
     }
 
+    private void WeekGrid_CellValidating(object? sender, DataGridViewCellValidatingEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.ColumnIndex != _horasColumn.Index)
+        {
+            return;
+        }
+
+        var input = e.FormattedValue?.ToString();
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            _weekGrid.Rows[e.RowIndex].ErrorText = string.Empty;
+            return;
+        }
+
+        if (!TryParseHoras(input, out _, out _, out var errorMessage))
+        {
+            e.Cancel = true;
+            _weekGrid.Rows[e.RowIndex].ErrorText = errorMessage;
+            return;
+        }
+
+        _weekGrid.Rows[e.RowIndex].ErrorText = string.Empty;
+    }
+
+    private void WeekGrid_CellEndEdit(object? sender, DataGridViewCellEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.ColumnIndex != _horasColumn.Index)
+        {
+            return;
+        }
+
+        var cell = _weekGrid.Rows[e.RowIndex].Cells[e.ColumnIndex];
+        if (!TryParseHoras(cell.Value, out _, out var normalized, out _))
+        {
+            cell.Value = string.Empty;
+        }
+        else
+        {
+            cell.Value = normalized;
+        }
+
+        _weekGrid.Rows[e.RowIndex].ErrorText = string.Empty;
+    }
+
     private void UpdateTotalHoras()
     {
         double total = 0;
@@ -533,20 +580,43 @@ public sealed class MainForm : Form
                 total += horas;
             }
         }
-        _totalHorasLabel.Text = $"Total semana: {total:0.##} h";
+        _totalHorasLabel.Text = $"Total semana: {total.ToString("0.##", CultureInfo.InvariantCulture)} h";
         _totalHorasLabel.ForeColor = Color.FromArgb(22, 58, 92);
     }
 
     private static bool TryParseHoras(object? value, out double horas)
     {
+        return TryParseHoras(value, out horas, out _, out _);
+    }
+
+    private static bool TryParseHoras(object? value, out double horas, out string normalized, out string errorMessage)
+    {
         horas = 0;
-        if (value is null)
+        normalized = string.Empty;
+        errorMessage = string.Empty;
+
+        var text = value?.ToString()?.Trim();
+        if (string.IsNullOrWhiteSpace(text))
         {
             return false;
         }
-        var text = value.ToString();
-        return double.TryParse(text, NumberStyles.Any, CultureInfo.CurrentCulture, out horas)
-            || double.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out horas);
+
+        if (!TryParseHorasDecimal(text, out var horasDecimal))
+        {
+            errorMessage = "Horas debe ser un número válido (usa punto decimal, por ejemplo 1.5).";
+            return false;
+        }
+
+        horasDecimal = Math.Round(horasDecimal, 2, MidpointRounding.AwayFromZero);
+
+        horas = (double)horasDecimal;
+        normalized = horasDecimal.ToString("0.##", CultureInfo.InvariantCulture);
+        return true;
+    }
+
+    private static bool TryParseHorasDecimal(string text, out decimal horas)
+    {
+        return decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out horas);
     }
 
     private void SaveWeek() => SaveWeek((int)_yearUpDown.Value, (int)_weekUpDown.Value);
@@ -562,7 +632,23 @@ public sealed class MainForm : Form
             var actividad = (row.Cells[_actividadColumn.Index].Value as string ?? string.Empty).Trim();
             var descripcion = (row.Cells[_descripcionColumn.Index].Value as string ?? string.Empty).Trim();
             var tipoText = row.Cells[_tipoColumn.Index].Value as string ?? "Normal";
-            TryParseHoras(row.Cells[_horasColumn.Index].Value, out var horas);
+            var rawHoras = row.Cells[_horasColumn.Index].Value;
+            var horasText = rawHoras?.ToString()?.Trim() ?? string.Empty;
+            if (horasText.Length > 0 && !TryParseHoras(rawHoras, out _, out var normalizedHoras, out var horasError))
+            {
+                MessageBox.Show(
+                    this,
+                    $"Fila {row.Index + 1}: {horasError}",
+                    "Horas inválidas",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                _weekGrid.CurrentCell = row.Cells[_horasColumn.Index];
+                _weekGrid.BeginEdit(true);
+                return;
+            }
+
+            TryParseHoras(rawHoras, out var horas, out var normalizedHorasForCell, out _);
+            row.Cells[_horasColumn.Index].Value = normalizedHorasForCell;
 
             var isEmptyRow = proyecto.Length == 0 && actividad.Length == 0 && descripcion.Length == 0 && horas == 0 && tipoText == "Normal";
             if (isEmptyRow || diaDisplay is null || !_dayOptionsByDisplay.TryGetValue(diaDisplay, out var date))
