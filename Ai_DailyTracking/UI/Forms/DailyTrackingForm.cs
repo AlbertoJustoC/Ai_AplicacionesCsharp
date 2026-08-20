@@ -50,6 +50,7 @@ public sealed class DailyTrackingForm : Form
         Size = new Size(1360, 900);
         BackColor = Color.FromArgb(236, 240, 244);
         Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Point);
+        ApplyExecutableIcon();
 
         BuildLayout();
         BuildDynamicEditor();
@@ -98,7 +99,7 @@ public sealed class DailyTrackingForm : Form
 
         _projectsFolderPathLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _projectsFolderPathLabel.Top = _chooseProjectsFolderButton.Top + _chooseProjectsFolderButton.Height + 2;
-        _projectsFolderPathLabel.Height = 22;
+        _projectsFolderPathLabel.Height = 36;
         _projectsFolderPathLabel.TextAlign = ContentAlignment.MiddleRight;
         _projectsFolderPathLabel.AutoEllipsis = true;
         _projectsFolderPathLabel.Font = new Font("Segoe UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point);
@@ -145,6 +146,9 @@ public sealed class DailyTrackingForm : Form
         _newProjectButton.Click += NewProjectButton_Click;
 
         ConfigureActionButton(_deleteProjectButton, "Eliminar proyecto", Color.FromArgb(178, 34, 52), larger: true);
+        _deleteProjectButton.TextAlign = ContentAlignment.MiddleCenter;
+        _deleteProjectButton.AutoSize = false;
+        _deleteProjectButton.Width = 145;
         _deleteProjectButton.Margin = new Padding(0, 10, 8, 0);
         _deleteProjectButton.Click += DeleteProjectButton_Click;
 
@@ -214,6 +218,18 @@ public sealed class DailyTrackingForm : Form
         layout.Controls.Add(buttonsFlow, 0, 0);
         layout.Controls.Add(infoPanel, 1, 0);
         return layout;
+    }
+
+    private void ApplyExecutableIcon()
+    {
+        try
+        {
+            Icon = Icon.ExtractAssociatedIcon(System.Windows.Forms.Application.ExecutablePath);
+        }
+        catch
+        {
+            // Keep default icon if extraction fails.
+        }
     }
 
     private static void ConfigureActionButton(Button button, string text, Color backColor, Color? foreColor = null, bool larger = false)
@@ -562,6 +578,14 @@ public sealed class DailyTrackingForm : Form
                     Height = 48,
                     PlaceholderText = field.Placeholder ?? string.Empty
                 };
+
+                if (IsCommentsField(field))
+                {
+                    longTextBox.Font = new Font(longTextBox.Font.FontFamily, Math.Max(6F, longTextBox.Font.Size - 1F), longTextBox.Font.Style, GraphicsUnit.Point);
+                    longTextBox.KeyDown += CommentsTextBox_KeyDown;
+                    longTextBox.KeyPress += CommentsTextBox_KeyPress;
+                }
+
                 longTextBox.TextChanged += FieldValueChanged;
                 return longTextBox;
 
@@ -574,6 +598,74 @@ public sealed class DailyTrackingForm : Form
                 textBox.TextChanged += FieldValueChanged;
                 return textBox;
         }
+    }
+
+    private static bool IsCommentsField(TrackingFieldDefinition field)
+    {
+        return string.Equals(field.Key, "notes", StringComparison.OrdinalIgnoreCase) ||
+            field.Label.Contains("coment", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildCommentPrefix()
+    {
+        return $"[{DateTime.Now:yyyy-MM-dd HH:mm}] ";
+    }
+
+    private void CommentsTextBox_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (sender is not TextBox textBox || e.KeyCode != Keys.Enter)
+        {
+            return;
+        }
+
+        textBox.SelectedText = Environment.NewLine + BuildCommentPrefix();
+        e.SuppressKeyPress = true;
+    }
+
+    private void CommentsTextBox_KeyPress(object? sender, KeyPressEventArgs e)
+    {
+        if (sender is not TextBox textBox || char.IsControl(e.KeyChar))
+        {
+            return;
+        }
+
+        if (ShouldInsertCommentPrefixAtCaret(textBox))
+        {
+            textBox.SelectedText = BuildCommentPrefix() + e.KeyChar;
+            e.Handled = true;
+        }
+    }
+
+    private static bool ShouldInsertCommentPrefixAtCaret(TextBox textBox)
+    {
+        if (textBox.TextLength == 0)
+        {
+            return true;
+        }
+
+        var caretIndex = textBox.SelectionStart;
+
+        if (caretIndex <= 0 || textBox.Text[caretIndex - 1] != '\n')
+        {
+            return false;
+        }
+
+        var nextNewLineIndex = textBox.Text.IndexOf('\n', caretIndex);
+        var lineLength = (nextNewLineIndex < 0 ? textBox.Text.Length : nextNewLineIndex) - caretIndex;
+        var currentLine = lineLength > 0 ? textBox.Text.Substring(caretIndex, lineLength).TrimStart('\r') : string.Empty;
+        return !HasCommentTimestampPrefix(currentLine);
+    }
+
+    private static bool HasCommentTimestampPrefix(string text)
+    {
+        return text.Length >= 19 &&
+            text[0] == '[' &&
+            text[5] == '-' &&
+            text[8] == '-' &&
+            text[11] == ' ' &&
+            text[14] == ':' &&
+            text[17] == ']' &&
+            text[18] == ' ';
     }
 
     private static Panel CreateCardPanel()
@@ -859,7 +951,15 @@ public sealed class DailyTrackingForm : Form
         foreach (var field in _schema.Fields)
         {
             var control = _fieldControls[field.Key];
-            _currentEntry.Values[field.Key] = ReadControlValue(control);
+            var value = ReadControlValue(control);
+            _currentEntry.Values[field.Key] = value;
+
+            if (field.DefaultToLastValue &&
+                field.Type == TrackingFieldType.Option &&
+                !string.IsNullOrWhiteSpace(value))
+            {
+                _workspaceService.RememberFieldValue(_schema, _currentProject, field, value);
+            }
         }
 
         _currentEntry.UpdatedAtLocal = DateTime.Now;
@@ -1083,19 +1183,44 @@ public sealed class DailyTrackingForm : Form
     private void UpdateProjectsFolderDisplay()
     {
         var path = _workspaceService.GetProjectsFolderPath();
+        var displayedPath = FormatPathForTwoLines(path);
         _toolTip.SetToolTip(_chooseProjectsFolderButton, path);
-        _projectsFolderPathLabel.Text = path;
+        _projectsFolderPathLabel.Text = displayedPath;
         _toolTip.SetToolTip(_projectsFolderPathLabel, $"{path}\n(Clic para abrir en el explorador de archivos)");
 
         var folderButtonSize = _chooseProjectsFolderButton.GetPreferredSize(Size.Empty);
-        var pathTextWidth = TextRenderer.MeasureText(path, _projectsFolderPathLabel.Font).Width;
+        var displayedLines = displayedPath.Split(Environment.NewLine);
+        var pathTextWidth = displayedLines.Max(line => TextRenderer.MeasureText(line, _projectsFolderPathLabel.Font).Width);
         var desiredWidth = Math.Max(folderButtonSize.Width, pathTextWidth) + 16;
-        var maxWidth = Math.Max(320, ClientSize.Width - 480);
+        var maxWidth = Math.Max(240, ClientSize.Width - 650);
 
-        _folderButtonPanel.Width = Math.Min(Math.Max(desiredWidth, 320), maxWidth);
+        _folderButtonPanel.Width = Math.Min(Math.Max(desiredWidth, 240), maxWidth);
         _chooseProjectsFolderButton.Left = _folderButtonPanel.Width - folderButtonSize.Width - 8;
         _projectsFolderPathLabel.Left = 0;
         _projectsFolderPathLabel.Width = _folderButtonPanel.Width;
+    }
+
+    private static string FormatPathForTwoLines(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || path.Length < 56)
+        {
+            return path;
+        }
+
+        var midpoint = path.Length / 2;
+        var splitIndex = path.LastIndexOf('\\', midpoint);
+
+        if (splitIndex < 0)
+        {
+            splitIndex = path.LastIndexOf('/', midpoint);
+        }
+
+        if (splitIndex <= 0 || splitIndex >= path.Length - 1)
+        {
+            return path;
+        }
+
+        return path[..splitIndex] + Environment.NewLine + path[(splitIndex + 1)..];
     }
 
     private void UpdateAutosaveLabel()

@@ -301,13 +301,43 @@ public sealed class TrackingChartForm : Form
 
         var filteredEntries = _project.Entries.Where(MatchesDateRangeFilter).ToList();
         var (dates, series) = TrackingChartSeriesBuilder.Build(filteredEntries, _dateField, seriesField, selectedOptionValues);
+        var legendSeries = BuildLegendSeriesWithMetrics(series);
 
         var matchingEntryCount = filteredEntries.Count(entry =>
             TryGetEntryDate(entry) is not null
             && selectedOptionValues.Contains(TrackingChartSeriesBuilder.GetDisplayValue(entry, seriesField.Key), StringComparer.OrdinalIgnoreCase));
 
-        _chartPanel.SetData($"{seriesField.Label}: registros acumulados por dia ({matchingEntryCount} registro(s))", dates, series);
+        _chartPanel.SetData($"{seriesField.Label}: registros acumulados por dia", dates, legendSeries);
         _summaryLabel.Text = $"Mostrando {matchingEntryCount} de {_project.Entries.Count} registros totales";
+    }
+
+    private static IReadOnlyList<(string Label, IReadOnlyList<int> Counts)> BuildLegendSeriesWithMetrics(
+        IReadOnlyList<(string Label, IReadOnlyList<int> Counts)> series)
+    {
+        if (series.Count == 0)
+        {
+            return series;
+        }
+
+        var totalSeries = series.Last();
+        var totalCount = totalSeries.Counts.Count > 0 ? totalSeries.Counts[^1] : 0;
+        var result = new List<(string Label, IReadOnlyList<int> Counts)>(series.Count);
+
+        foreach (var item in series)
+        {
+            var finalCount = item.Counts.Count > 0 ? item.Counts[^1] : 0;
+
+            if (string.Equals(item.Label, "Total", StringComparison.OrdinalIgnoreCase))
+            {
+                result.Add(($"Total ({finalCount})", item.Counts));
+                continue;
+            }
+
+            var percentage = totalCount == 0 ? 0D : finalCount * 100D / totalCount;
+            result.Add(($"{item.Label} ({finalCount} - {percentage:0.#}%)", item.Counts));
+        }
+
+        return result;
     }
 
     private bool MatchesDateRangeFilter(TrackingEntry entry)

@@ -6,6 +6,8 @@ namespace Ai_DailyTracking.Application.Services;
 
 public sealed class ProjectWorkspaceService
 {
+    private const string DateFormat = "yyyy-MM-dd";
+
     private readonly TrackingProjectRepository _projectRepository;
     private readonly AppPreferencesRepository _preferencesRepository;
     private readonly TrackingSchemaRepository _schemaRepository;
@@ -27,8 +29,20 @@ public sealed class ProjectWorkspaceService
             EntryNumber = project.Entries.Count == 0 ? 1 : project.Entries.Max(item => item.EntryNumber) + 1
         };
 
+        var today = DateTime.Today.ToString(DateFormat);
+        entry.Values["recordDate"] = today;
+        entry.Values["updatedDate"] = today;
+        entry.Values["priority"] = "Media";
+        entry.Values["complexity"] = "Media";
+        entry.Values["status"] = "Nuevo";
+
         foreach (var field in schema.Fields.Where(field => field.DefaultToLastValue && !string.IsNullOrWhiteSpace(field.LastValue)))
         {
+            if (entry.Values.ContainsKey(field.Key))
+            {
+                continue;
+            }
+
             entry.Values[field.Key] = field.LastValue;
         }
 
