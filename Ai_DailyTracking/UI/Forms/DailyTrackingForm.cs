@@ -7,6 +7,12 @@ namespace Ai_DailyTracking.UI.Forms;
 
 public sealed class DailyTrackingForm : Form
 {
+    private const string InputReceivedPathKey = "inputReceivedPath";
+    private const string NotesFieldKey = "notes";
+    private const string StatusFieldKey = "status";
+    private const string UpdatedDateFieldKey = "updatedDate";
+    private const string UpdatedDateAutoKey = "updatedDateAuto";
+
     private readonly ProjectWorkspaceService _workspaceService;
     private readonly TrackingFormSchema _schema;
     private readonly Dictionary<string, Control> _fieldControls = new(StringComparer.OrdinalIgnoreCase);
@@ -23,7 +29,9 @@ public sealed class DailyTrackingForm : Form
     private readonly Label _projectSummaryLabel = new();
     private readonly Label _autosaveLabel = new();
     private readonly Label _projectsFolderPathLabel = new();
-    private readonly Label _entryValidationLabel = new();
+    private readonly Label _inputReceivedPathLabel = new();
+    private readonly Button _inputReceivedButton = new();
+    private readonly CheckBox _updatedDateAutoCheckBox = new();
     private readonly ListView _entriesListView = new();
     private readonly ComboBox _statusFilterCombo = new();
     private readonly TableLayoutPanel _editorLayout = new();
@@ -31,7 +39,10 @@ public sealed class DailyTrackingForm : Form
     private readonly TrackingFieldDefinition? _statusFieldDefinition;
 
     private bool _suppressEvents;
+    private bool _suppressUpdatedDateAutoChanged;
     private bool _hasUnsavedChanges;
+    private bool _forcingInputReceivedSelection;
+    private bool _activityEditedPendingInputPathPrompt;
     private TrackingProject? _currentProject;
     private TrackingEntry? _currentEntry;
     private string? _statusFilterValue;
@@ -371,19 +382,15 @@ public sealed class DailyTrackingForm : Form
     private Control CreateEditorPanel()
     {
         var card = CreateCardPanel();
-        card.Padding = new Padding(18, 16, 18, 16);
+        card.Padding = new Padding(16, 12, 16, 12);
 
         var headingLabel = new Label
         {
             Dock = DockStyle.Top,
-            Height = 32,
+            Height = 28,
             Text = "Ficha de seguimiento",
             Font = new Font("Segoe UI Semibold", 13F, FontStyle.Bold, GraphicsUnit.Point)
         };
-
-        _entryValidationLabel.Dock = DockStyle.Top;
-        _entryValidationLabel.Height = 28;
-        _entryValidationLabel.ForeColor = Color.FromArgb(132, 90, 22);
 
         _editorLayout.Dock = DockStyle.Top;
         _editorLayout.AutoSize = true;
@@ -393,12 +400,11 @@ public sealed class DailyTrackingForm : Form
         {
             Dock = DockStyle.Fill,
             AutoScroll = true,
-            Padding = new Padding(0, 12, 0, 0)
+            Padding = new Padding(0, 8, 0, 0)
         };
         scrollPanel.Controls.Add(_editorLayout);
 
         card.Controls.Add(scrollPanel);
-        card.Controls.Add(_entryValidationLabel);
         card.Controls.Add(headingLabel);
         return card;
     }
@@ -421,6 +427,12 @@ public sealed class DailyTrackingForm : Form
             {
                 FlushCompactFieldGroup(compactGroup);
                 AddEditorRow(CreateFieldCard(field));
+
+                if (IsActivityField(field))
+                {
+                    AddEditorRow(CreateInputReceivedRow());
+                }
+
                 continue;
             }
 
@@ -484,28 +496,53 @@ public sealed class DailyTrackingForm : Form
         var card = new Panel
         {
             Dock = DockStyle.Fill,
-            Height = field.Type == TrackingFieldType.LongText ? 96 : 92,
+            Height = GetFieldCardHeight(field),
             BackColor = Color.FromArgb(249, 251, 252),
-            Margin = new Padding(6),
-            Padding = new Padding(12)
+            Margin = new Padding(4),
+            Padding = new Padding(10)
         };
 
         var label = new Label
         {
             Dock = DockStyle.Top,
-            Height = 24,
+            Height = 20,
             Text = field.Required ? $"{field.Label} *" : field.Label,
-            Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold, GraphicsUnit.Point)
+            Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold, GraphicsUnit.Point)
         };
 
         var editor = CreateEditorControl(field);
         editor.Dock = DockStyle.Bottom;
         editor.Tag = field.Key;
 
+        if (IsUpdatedDateField(field))
+        {
+            card.Controls.Add(CreateUpdatedDateAutoToggle());
+        }
+
         card.Controls.Add(editor);
         card.Controls.Add(label);
         _fieldControls[field.Key] = editor;
         return card;
+    }
+
+    private static int GetFieldCardHeight(TrackingFieldDefinition field)
+    {
+        if (IsUpdatedDateField(field))
+        {
+            return 100;
+        }
+
+        if (field.Type != TrackingFieldType.LongText)
+        {
+            return 82;
+        }
+
+        if (IsCommentsField(field))
+        {
+            return 108;
+        }
+
+        return 86;
     }
 
     private Control CreateEditorControl(TrackingFieldDefinition field)
@@ -515,12 +552,18 @@ public sealed class DailyTrackingForm : Form
             case TrackingFieldType.Date:
                 var datePicker = new DateTimePicker
                 {
-                    Height = 38,
+                    Height = 34,
                     Format = DateTimePickerFormat.Custom,
                     CustomFormat = "dd MMM yyyy",
                     ShowCheckBox = true,
                     Checked = false
                 };
+
+                if (IsUpdatedDateField(field))
+                {
+                    datePicker.ValueChanged += (s, e) => UpdatedDatePicker_ValueChanged(datePicker);
+                }
+
                 datePicker.ValueChanged += (s, e) => EnforceDependentMinimumDates(field, datePicker);
                 datePicker.ValueChanged += FieldValueChanged;
                 return datePicker;
@@ -528,7 +571,7 @@ public sealed class DailyTrackingForm : Form
             case TrackingFieldType.Option:
                 var comboBox = new ComboBox
                 {
-                    Height = 38,
+                    Height = 34,
                     DropDownStyle = ComboBoxStyle.DropDownList
                 };
                 comboBox.Items.Add(string.Empty);
@@ -550,7 +593,7 @@ public sealed class DailyTrackingForm : Form
             case TrackingFieldType.EditableOption:
                 var editableCombo = new ComboBox
                 {
-                    Height = 38,
+                    Height = 34,
                     DropDownStyle = ComboBoxStyle.DropDown,
                     AutoCompleteMode = AutoCompleteMode.SuggestAppend,
                     AutoCompleteSource = AutoCompleteSource.ListItems
@@ -575,9 +618,16 @@ public sealed class DailyTrackingForm : Form
                 {
                     Multiline = true,
                     ScrollBars = ScrollBars.Vertical,
-                    Height = 48,
+                    Height = IsCommentsField(field) ? 66 : 44,
                     PlaceholderText = field.Placeholder ?? string.Empty
                 };
+
+                if (IsActivityField(field))
+                {
+                    longTextBox.TextChanged += ActivityTextBox_TextChanged;
+                    longTextBox.KeyDown += ActivityTextBox_KeyDown;
+                    longTextBox.Leave += ActivityTextBox_Leave;
+                }
 
                 if (IsCommentsField(field))
                 {
@@ -592,12 +642,341 @@ public sealed class DailyTrackingForm : Form
             default:
                 var textBox = new TextBox
                 {
-                    Height = 38,
+                    Height = 34,
                     PlaceholderText = field.Placeholder ?? string.Empty
                 };
                 textBox.TextChanged += FieldValueChanged;
                 return textBox;
         }
+    }
+
+    private Control CreateInputReceivedRow()
+    {
+        var row = new TableLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2,
+            RowCount = 1,
+            BackColor = Color.FromArgb(249, 251, 252),
+            Margin = new Padding(4, 0, 4, 4),
+            Padding = new Padding(10, 6, 10, 6)
+        };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        row.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        _inputReceivedPathLabel.Dock = DockStyle.Fill;
+        _inputReceivedPathLabel.Height = 36;
+        _inputReceivedPathLabel.Font = new Font(
+            _inputReceivedPathLabel.Font.FontFamily,
+            Math.Max(6F, _inputReceivedPathLabel.Font.Size - 1F),
+            _inputReceivedPathLabel.Font.Style,
+            GraphicsUnit.Point);
+        _inputReceivedPathLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _inputReceivedPathLabel.AutoEllipsis = true;
+        _inputReceivedPathLabel.Margin = new Padding(0, 4, 8, 0);
+        _inputReceivedPathLabel.Click += InputReceivedPathLabel_Click;
+        _inputReceivedPathLabel.Resize += InputReceivedPathLabel_Resize;
+
+        const string inputReceivedButtonText = "input recibido";
+        ConfigureActionButton(_inputReceivedButton, inputReceivedButtonText, Color.FromArgb(18, 103, 177));
+        var minButtonWidth = TextRenderer.MeasureText(inputReceivedButtonText, _inputReceivedButton.Font).Width + 24;
+        _inputReceivedButton.AutoSize = false;
+        _inputReceivedButton.Width = Math.Max(132, minButtonWidth);
+        _inputReceivedButton.Height = 32;
+        _inputReceivedButton.Padding = new Padding(8, 0, 8, 0);
+        _inputReceivedButton.TextAlign = ContentAlignment.MiddleCenter;
+        _inputReceivedButton.Margin = new Padding(0);
+        _inputReceivedButton.Click += InputReceivedButton_Click;
+
+        row.Controls.Add(_inputReceivedPathLabel, 0, 0);
+        row.Controls.Add(_inputReceivedButton, 1, 0);
+
+        UpdateInputReceivedPathDisplay(null);
+        return row;
+    }
+
+    private Control CreateUpdatedDateAutoToggle()
+    {
+        _updatedDateAutoCheckBox.AutoSize = true;
+        _updatedDateAutoCheckBox.Text = "Auto hoy";
+        _updatedDateAutoCheckBox.Checked = true;
+        _updatedDateAutoCheckBox.Margin = new Padding(0, 2, 0, 0);
+        _updatedDateAutoCheckBox.CheckedChanged += UpdatedDateAutoCheckBox_CheckedChanged;
+
+        var panel = new Panel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 22,
+            BackColor = Color.Transparent
+        };
+
+        _updatedDateAutoCheckBox.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _updatedDateAutoCheckBox.Left = Math.Max(0, panel.Width - _updatedDateAutoCheckBox.PreferredSize.Width - 2);
+        panel.Resize += (_, _) =>
+        {
+            _updatedDateAutoCheckBox.Left = Math.Max(0, panel.Width - _updatedDateAutoCheckBox.PreferredSize.Width - 2);
+        };
+
+        panel.Controls.Add(_updatedDateAutoCheckBox);
+        return panel;
+    }
+
+    private static bool IsActivityField(TrackingFieldDefinition field)
+    {
+        return string.Equals(field.Key, "activity", StringComparison.OrdinalIgnoreCase) ||
+            field.Label.Contains("actividad", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsUpdatedDateField(TrackingFieldDefinition field)
+    {
+        return string.Equals(field.Key, UpdatedDateFieldKey, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void UpdatedDatePicker_ValueChanged(DateTimePicker datePicker)
+    {
+        if (_suppressEvents || !datePicker.Focused || !_updatedDateAutoCheckBox.Checked)
+        {
+            return;
+        }
+
+        // User manually changed the date: switch to manual mode until Auto hoy is enabled again.
+        _suppressUpdatedDateAutoChanged = true;
+        _updatedDateAutoCheckBox.Checked = false;
+        _suppressUpdatedDateAutoChanged = false;
+    }
+
+    private void UpdatedDateAutoCheckBox_CheckedChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _suppressUpdatedDateAutoChanged)
+        {
+            return;
+        }
+
+        PersistCurrentEntry();
+    }
+
+    private void ActivityTextBox_TextChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents)
+        {
+            return;
+        }
+
+        _activityEditedPendingInputPathPrompt = true;
+    }
+
+    private void ActivityTextBox_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (sender is not TextBox textBox || e.KeyCode != Keys.Enter)
+        {
+            return;
+        }
+
+        BeginInvoke(() => EnsureInputReceivedPathAfterActivityEdit(textBox));
+    }
+
+    private void ActivityTextBox_Leave(object? sender, EventArgs e)
+    {
+        if (sender is not TextBox textBox)
+        {
+            return;
+        }
+
+        EnsureInputReceivedPathAfterActivityEdit(textBox);
+    }
+
+    private void EnsureInputReceivedPathAfterActivityEdit(TextBox activityTextBox)
+    {
+        if (_suppressEvents || _forcingInputReceivedSelection || !_activityEditedPendingInputPathPrompt || _currentEntry is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(activityTextBox.Text))
+        {
+            _activityEditedPendingInputPathPrompt = false;
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_inputReceivedPathLabel.Tag as string))
+        {
+            _activityEditedPendingInputPathPrompt = false;
+            return;
+        }
+
+        _forcingInputReceivedSelection = true;
+
+        try
+        {
+            if (TrySelectInputReceivedPath())
+            {
+                _activityEditedPendingInputPathPrompt = false;
+                return;
+            }
+
+            MessageBox.Show(
+                this,
+                "Debes seleccionar una carpeta en \"input recibido\" para continuar con este registro.",
+                "Input recibido requerido",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+
+            BeginInvoke(() =>
+            {
+                activityTextBox.Focus();
+                activityTextBox.SelectionStart = activityTextBox.TextLength;
+            });
+        }
+        finally
+        {
+            _forcingInputReceivedSelection = false;
+        }
+    }
+
+    private void InputReceivedButton_Click(object? sender, EventArgs e)
+    {
+        TrySelectInputReceivedPath();
+    }
+
+    private bool TrySelectInputReceivedPath()
+    {
+        if (_currentEntry is null)
+        {
+            return false;
+        }
+
+        var selectedPath = ShowInputReceivedFolderDialog();
+
+        if (selectedPath is null)
+        {
+            return false;
+        }
+
+        UpdateInputReceivedPathDisplay(selectedPath);
+        PersistCurrentEntry();
+        _activityEditedPendingInputPathPrompt = false;
+        return true;
+    }
+
+    private string? ShowInputReceivedFolderDialog()
+    {
+        var currentPath = _inputReceivedPathLabel.Tag as string;
+        var initialPath = ResolveInputReceivedDialogInitialPath(currentPath);
+
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Selecciona la carpeta de input recibido",
+            UseDescriptionForTitle = true,
+            SelectedPath = initialPath ?? string.Empty
+        };
+
+        return dialog.ShowDialog(this) == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.SelectedPath)
+            ? dialog.SelectedPath
+            : null;
+    }
+
+    private string? ResolveInputReceivedDialogInitialPath(string? currentPath)
+    {
+        if (!string.IsNullOrWhiteSpace(currentPath) && Directory.Exists(currentPath))
+        {
+            return currentPath;
+        }
+
+        if (_currentProject is null)
+        {
+            return null;
+        }
+
+        foreach (var entry in _currentProject.Entries.OrderByDescending(item => item.UpdatedAtLocal))
+        {
+            if (entry.Values.TryGetValue(InputReceivedPathKey, out var entryPath) && !string.IsNullOrWhiteSpace(entryPath) && Directory.Exists(entryPath))
+            {
+                return entryPath;
+            }
+        }
+
+        return null;
+    }
+
+    private void InputReceivedPathLabel_Click(object? sender, EventArgs e)
+    {
+        var path = _inputReceivedPathLabel.Tag as string;
+
+        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+        {
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+    }
+
+    private void InputReceivedPathLabel_Resize(object? sender, EventArgs e)
+    {
+        if (_inputReceivedPathLabel.Tag is string currentPath)
+        {
+            UpdateInputReceivedPathDisplay(currentPath);
+        }
+    }
+
+    private static string FormatPathForTwoLinesIfNeeded(string path, Font font, int maxWidth)
+    {
+        const string continuationIndent = "    ";
+
+        if (string.IsNullOrWhiteSpace(path) || TextRenderer.MeasureText(path, font).Width <= maxWidth)
+        {
+            return path;
+        }
+
+        var fullWidth = TextRenderer.MeasureText(path, font).Width;
+        var bestIndex = -1;
+        var bestWidth = int.MaxValue;
+
+        for (var index = 1; index < path.Length - 1; index++)
+        {
+            if (path[index] != '\\' && path[index] != '/')
+            {
+                continue;
+            }
+
+            var firstLine = path[..(index + 1)];
+            var secondLine = path[(index + 1)..];
+            var indentedSecondLine = continuationIndent + secondLine;
+            var maxLineWidth = Math.Max(TextRenderer.MeasureText(firstLine, font).Width, TextRenderer.MeasureText(indentedSecondLine, font).Width);
+
+            if (maxLineWidth < bestWidth)
+            {
+                bestWidth = maxLineWidth;
+                bestIndex = index;
+            }
+        }
+
+        if (bestIndex <= 0 || bestWidth >= fullWidth)
+        {
+            return path;
+        }
+
+        return path[..(bestIndex + 1)] + Environment.NewLine + continuationIndent + path[(bestIndex + 1)..];
+    }
+
+    private void UpdateInputReceivedPathDisplay(string? path)
+    {
+        var selectedPath = string.IsNullOrWhiteSpace(path) ? null : path.Trim();
+        var pathExists = selectedPath is not null && Directory.Exists(selectedPath);
+
+        _inputReceivedPathLabel.Tag = selectedPath;
+        _inputReceivedPathLabel.Text = selectedPath is null
+            ? "Sin ruta de input recibido"
+            : FormatPathForTwoLinesIfNeeded(selectedPath, _inputReceivedPathLabel.Font, Math.Max(120, _inputReceivedPathLabel.Width - 6));
+        _inputReceivedPathLabel.ForeColor = selectedPath is null ? Color.FromArgb(132, 140, 152) : Color.FromArgb(22, 58, 92);
+        _inputReceivedPathLabel.Cursor = pathExists ? Cursors.Hand : Cursors.Default;
+
+        _toolTip.SetToolTip(
+            _inputReceivedPathLabel,
+            selectedPath is null
+                ? "Selecciona una carpeta con el boton \"input recibido\"."
+                : $"{selectedPath}\n(Clic para abrir en el explorador de archivos)");
     }
 
     private static bool IsCommentsField(TrackingFieldDefinition field)
@@ -836,8 +1215,8 @@ public sealed class DailyTrackingForm : Form
     // Sizes the window tall enough to show every ficha field without vertical scrolling, capped to the screen's working area.
     private void FitWindowToContent()
     {
-        // Chrome above/around the dynamic field grid: hero(130) + toolbar(76) + content padding(18) + editor card padding(32) + heading(32) + validation(28) + scroll padding(12).
-        const int chromeHeight = 130 + 76 + 18 + 32 + 32 + 28 + 12;
+        // Chrome above/around the dynamic field grid: hero + toolbar + content/editor paddings + heading + scroll top padding.
+        const int chromeHeight = 130 + 76 + 18 + 24 + 28 + 8;
         const int buffer = 16;
 
         var desiredClientHeight = chromeHeight + _editorLayout.PreferredSize.Height + buffer;
@@ -875,6 +1254,7 @@ public sealed class DailyTrackingForm : Form
         if (_currentProject.Entries.Count == 0)
         {
             _currentEntry = _workspaceService.CreateEntry(_currentProject, _schema);
+            EnsureInitialStatusNote(_currentEntry);
             _hasUnsavedChanges = true;
         }
 
@@ -893,6 +1273,7 @@ public sealed class DailyTrackingForm : Form
     private void LoadEntry(TrackingEntry entry)
     {
         _currentEntry = entry;
+        EnsureUpdatedDateAutoFlag(entry);
         _suppressEvents = true;
 
         foreach (var field in _schema.Fields)
@@ -935,8 +1316,12 @@ public sealed class DailyTrackingForm : Form
             }
         }
 
+        var inputReceivedPath = entry.Values.TryGetValue(InputReceivedPathKey, out var storedPath) ? storedPath : null;
+        UpdateInputReceivedPathDisplay(inputReceivedPath);
+        SetUpdatedDateAutoCheckboxState(ReadUpdatedDateAutoFlag(entry));
+        _activityEditedPendingInputPathPrompt = false;
+
         _suppressEvents = false;
-        UpdateValidationLabel();
         UpdateAutosaveLabel();
         SelectCurrentEntryInList();
     }
@@ -947,6 +1332,8 @@ public sealed class DailyTrackingForm : Form
         {
             return;
         }
+
+        var previousStatus = GetFieldValue(_currentEntry, StatusFieldKey);
 
         foreach (var field in _schema.Fields)
         {
@@ -962,12 +1349,161 @@ public sealed class DailyTrackingForm : Form
             }
         }
 
+        var updatedDateAutoEnabled = _updatedDateAutoCheckBox.Checked;
+        _currentEntry.Values[UpdatedDateAutoKey] = updatedDateAutoEnabled ? "true" : "false";
+
+        if (updatedDateAutoEnabled && !IsUserManuallyEditingUpdatedDate())
+        {
+            ForceUpdatedDateToToday(_currentEntry);
+        }
+
+        var currentStatus = GetFieldValue(_currentEntry, StatusFieldKey);
+
+        if (!string.IsNullOrWhiteSpace(currentStatus) && !string.Equals(previousStatus, currentStatus, StringComparison.OrdinalIgnoreCase))
+        {
+            AppendNoteEntry(_currentEntry, currentStatus);
+        }
+
+        var inputReceivedPath = _inputReceivedPathLabel.Tag as string;
+        _currentEntry.Values[InputReceivedPathKey] = string.IsNullOrWhiteSpace(inputReceivedPath) ? null : inputReceivedPath;
+
         _currentEntry.UpdatedAtLocal = DateTime.Now;
         _hasUnsavedChanges = true;
         RefreshEntriesList();
         UpdateProjectSummary();
-        UpdateValidationLabel();
         UpdateAutosaveLabel();
+    }
+
+    private void EnsureInitialStatusNote(TrackingEntry entry)
+    {
+        var currentNotes = GetFieldValue(entry, NotesFieldKey);
+
+        if (!string.IsNullOrWhiteSpace(currentNotes))
+        {
+            return;
+        }
+
+        var status = GetFieldValue(entry, StatusFieldKey) ?? "Nuevo";
+        AppendNoteEntry(entry, status);
+    }
+
+    private void ForceUpdatedDateToToday(TrackingEntry entry)
+    {
+        var today = DateTime.Today;
+        var todayValue = today.ToString("yyyy-MM-dd");
+        entry.Values[UpdatedDateFieldKey] = todayValue;
+
+        if (!_fieldControls.TryGetValue(UpdatedDateFieldKey, out var updatedDateControl) || updatedDateControl is not DateTimePicker updatedDatePicker)
+        {
+            return;
+        }
+
+        var previousSuppressState = _suppressEvents;
+        _suppressEvents = true;
+        updatedDatePicker.Value = today;
+        updatedDatePicker.Checked = true;
+        _suppressEvents = previousSuppressState;
+    }
+
+    private bool IsUserManuallyEditingUpdatedDate()
+    {
+        if (!_fieldControls.TryGetValue(UpdatedDateFieldKey, out var updatedDateControl) || updatedDateControl is not DateTimePicker updatedDatePicker)
+        {
+            return false;
+        }
+
+        return updatedDatePicker.Focused;
+    }
+
+    private static bool ReadUpdatedDateAutoFlag(TrackingEntry entry)
+    {
+        return entry.Values.TryGetValue(UpdatedDateAutoKey, out var rawValue)
+            ? !string.Equals(rawValue, "false", StringComparison.OrdinalIgnoreCase)
+            : true;
+    }
+
+    private static void EnsureUpdatedDateAutoFlag(TrackingEntry entry)
+    {
+        if (!entry.Values.ContainsKey(UpdatedDateAutoKey))
+        {
+            entry.Values[UpdatedDateAutoKey] = "true";
+        }
+    }
+
+    private void SetUpdatedDateAutoCheckboxState(bool isChecked)
+    {
+        _suppressUpdatedDateAutoChanged = true;
+        _updatedDateAutoCheckBox.Checked = isChecked;
+        _suppressUpdatedDateAutoChanged = false;
+    }
+
+    private void AppendNoteEntry(TrackingEntry entry, string noteText)
+    {
+        if (string.IsNullOrWhiteSpace(noteText))
+        {
+            return;
+        }
+
+        var normalizedNoteText = noteText.Trim();
+        var currentNotes = GetFieldValue(entry, NotesFieldKey);
+
+        if (IsDuplicateConsecutiveAutoNote(currentNotes, normalizedNoteText))
+        {
+            return;
+        }
+
+        var line = BuildCommentPrefix() + normalizedNoteText;
+        var combinedNotes = string.IsNullOrWhiteSpace(currentNotes)
+            ? line
+            : currentNotes + Environment.NewLine + line;
+
+        entry.Values[NotesFieldKey] = combinedNotes;
+
+        if (!_fieldControls.TryGetValue(NotesFieldKey, out var notesControl) || notesControl is not TextBox notesTextBox)
+        {
+            return;
+        }
+
+        var previousSuppressState = _suppressEvents;
+        _suppressEvents = true;
+        notesTextBox.Text = combinedNotes;
+        notesTextBox.SelectionStart = notesTextBox.TextLength;
+        _suppressEvents = previousSuppressState;
+    }
+
+    private static bool IsDuplicateConsecutiveAutoNote(string? currentNotes, string nextNoteText)
+    {
+        if (string.IsNullOrWhiteSpace(currentNotes))
+        {
+            return false;
+        }
+
+        var lines = currentNotes
+            .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (lines.Length == 0)
+        {
+            return false;
+        }
+
+        var lastText = StripCommentPrefix(lines[^1]);
+        return string.Equals(lastText, nextNoteText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string StripCommentPrefix(string noteLine)
+    {
+        if (noteLine.Length < 20 || noteLine[0] != '[')
+        {
+            return noteLine.Trim();
+        }
+
+        // Prefix format: [yyyy-MM-dd HH:mm] 
+        if (noteLine[5] == '-' && noteLine[8] == '-' && noteLine[11] == ' ' && noteLine[14] == ':' && noteLine[17] == ']' && noteLine[18] == ' ')
+        {
+            return noteLine[19..].Trim();
+        }
+
+        return noteLine.Trim();
     }
 
     private void SaveCurrentProject()
@@ -1229,6 +1765,8 @@ public sealed class DailyTrackingForm : Form
 
         if (_currentEntry is null)
         {
+            UpdateInputReceivedPathDisplay(null);
+            _activityEditedPendingInputPathPrompt = false;
             _autosaveLabel.Text = "Sin registro seleccionado";
             return;
         }
@@ -1236,20 +1774,6 @@ public sealed class DailyTrackingForm : Form
         _autosaveLabel.Text = _hasUnsavedChanges
             ? "Cambios sin guardar"
             : $"Guardado: {_currentEntry.UpdatedAtLocal:dd/MM/yyyy HH:mm:ss}";
-    }
-
-    private void UpdateValidationLabel()
-    {
-        if (_currentEntry is null)
-        {
-            _entryValidationLabel.Text = string.Empty;
-            return;
-        }
-
-        var missingRequiredCount = _schema.Fields.Count(field => field.Required && string.IsNullOrWhiteSpace(GetFieldValue(_currentEntry, field.Key)));
-        _entryValidationLabel.Text = missingRequiredCount == 0
-            ? "Todos los campos requeridos de este registro estan completos."
-            : $"Faltan {missingRequiredCount} campos requeridos. Se guardan igual, pero conviene completarlos.";
     }
 
     private void FieldValueChanged(object? sender, EventArgs e)
@@ -1384,6 +1908,7 @@ public sealed class DailyTrackingForm : Form
         }
 
         var entry = _workspaceService.CreateEntry(_currentProject, _schema);
+        EnsureInitialStatusNote(entry);
         LoadProject(_currentProject);
         _hasUnsavedChanges = true;
         LoadEntry(entry);

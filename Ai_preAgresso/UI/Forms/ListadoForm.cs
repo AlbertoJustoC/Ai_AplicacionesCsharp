@@ -34,6 +34,7 @@ public sealed class ListadoForm : Form
     private readonly Button _exportButton = new() { Text = "Exportar filtro a Excel", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
     private readonly Button _pieChartButton = new() { Text = "Gráfico de horas (quesitos)", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
     private readonly Label _totalLabel = new() { AutoSize = true, Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold) };
+    private readonly ToolTip _copyFeedbackToolTip = new() { AutoPopDelay = 1200, InitialDelay = 0, ReshowDelay = 0 };
 
     private readonly DataGridView _grid = new();
     private readonly DataGridViewTextBoxColumn _fechaColumn = new();
@@ -185,6 +186,8 @@ public sealed class ListadoForm : Form
         _anioFilter.SelectionChanged += (_, _) => OnFilterChanged();
         _mesFilter.SelectionChanged += (_, _) => OnFilterChanged();
         _semanaFilter.SelectionChanged += (_, _) => OnFilterChanged();
+        _grid.CellToolTipTextNeeded += Grid_CellToolTipTextNeeded;
+        _grid.CellDoubleClick += Grid_CellDoubleClick;
         _exportButton.Click += ExportButton_Click;
         _pieChartButton.Click += (_, _) => ShowPieChart();
         _currentWeekFilterButton.Click += (_, _) => SetCurrentWeekFilter();
@@ -395,6 +398,54 @@ public sealed class ListadoForm : Form
         TipoJornada.Baja => Color.FromArgb(255, 205, 210),
         _ => Color.White
     };
+
+    private static void Grid_CellToolTipTextNeeded(object? sender, DataGridViewCellToolTipTextNeededEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.ColumnIndex < 0)
+        {
+            return;
+        }
+
+        e.ToolTipText = "Doble clic para copiarlo al portapapeles";
+    }
+
+    private void Grid_CellDoubleClick(object? sender, DataGridViewCellEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.ColumnIndex < 0)
+        {
+            return;
+        }
+
+        var value = _grid.Rows[e.RowIndex].Cells[e.ColumnIndex].Value?.ToString();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        try
+        {
+            Clipboard.SetText(value);
+            ShowCopyFeedback(e.RowIndex, e.ColumnIndex);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"No se pudo copiar al portapapeles:\n{ex.Message}", "Agresso", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void ShowCopyFeedback(int rowIndex, int columnIndex)
+    {
+        var cellRect = _grid.GetCellDisplayRectangle(columnIndex, rowIndex, false);
+        if (cellRect.Width <= 0 || cellRect.Height <= 0)
+        {
+            return;
+        }
+
+        var x = Math.Max(0, cellRect.Left + 8);
+        var y = Math.Max(0, cellRect.Bottom - 2);
+        _copyFeedbackToolTip.Hide(_grid);
+        _copyFeedbackToolTip.Show("Copiado al portapapeles", _grid, x, y, 1200);
+    }
 
     private void ExportButton_Click(object? sender, EventArgs e)
     {
