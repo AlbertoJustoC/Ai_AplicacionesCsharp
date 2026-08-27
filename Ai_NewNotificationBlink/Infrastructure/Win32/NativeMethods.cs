@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace Ai_OutlookNewMailBlink.Infrastructure.Win32;
+namespace Ai_NewNotificationBlink.Infrastructure.Win32;
 
 internal static class NativeMethods
 {

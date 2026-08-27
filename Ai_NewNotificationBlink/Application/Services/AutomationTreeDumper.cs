@@ -2,7 +2,7 @@ using System.IO;
 using System.Text;
 using System.Windows.Automation;
 
-namespace Ai_OutlookNewMailBlink.Application.Services;
+namespace Ai_NewNotificationBlink.Application.Services;
 
 // Diagnostic helper: dumps the UI Automation tree of a window to a text file so the
 // InboxFolderNames setting can be tuned to match the real folder-name text shown in
@@ -37,7 +37,7 @@ public static class AutomationTreeDumper
 
         try
         {
-            var taskbarHandle = Ai_OutlookNewMailBlink.Infrastructure.Win32.NativeMethods.FindWindow("Shell_TrayWnd", null);
+            var taskbarHandle = Ai_NewNotificationBlink.Infrastructure.Win32.NativeMethods.FindWindow("Shell_TrayWnd", null);
             if (taskbarHandle == IntPtr.Zero)
             {
                 builder.AppendLine("[error] No se encontró la ventana Shell_TrayWnd.");

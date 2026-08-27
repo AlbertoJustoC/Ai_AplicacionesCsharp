@@ -1,10 +1,10 @@
-using Ai_OutlookNewMailBlink.Application.Services;
-using Ai_OutlookNewMailBlink.Infrastructure;
-using Ai_OutlookNewMailBlink.Shared.Constants;
-using Ai_OutlookNewMailBlink.Shared.Helpers;
-using Ai_OutlookNewMailBlink.UI.Forms;
+using Ai_NewNotificationBlink.Application.Services;
+using Ai_NewNotificationBlink.Infrastructure;
+using Ai_NewNotificationBlink.Shared.Constants;
+using Ai_NewNotificationBlink.Shared.Helpers;
+using Ai_NewNotificationBlink.UI.Forms;
 
-namespace Ai_OutlookNewMailBlink.UI;
+namespace Ai_NewNotificationBlink.UI;
 
 public sealed class TrayApplicationContext : ApplicationContext
 {
@@ -49,7 +49,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _notifyIcon = new NotifyIcon
         {
             Icon = AppIconProvider.Current,
-            Text = "Ai_OutlookNewMailBlink",
+            Text = "Ai_NewNotificationBlink",
             ContextMenuStrip = contextMenu,
             Visible = true
         };
@@ -75,13 +75,13 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             _pollTimer.Start();
             _toggleMonitoringMenuItem.Text = "Detener monitorización";
-            _notifyIcon.Text = "Ai_OutlookNewMailBlink - monitorizando";
+            _notifyIcon.Text = "Ai_NewNotificationBlink - monitorizando";
         }
         else
         {
             _pollTimer.Stop();
             _toggleMonitoringMenuItem.Text = "Iniciar monitorización";
-            _notifyIcon.Text = "Ai_OutlookNewMailBlink - detenido";
+            _notifyIcon.Text = "Ai_NewNotificationBlink - detenido";
         }
     }
 
@@ -110,20 +110,20 @@ public sealed class TrayApplicationContext : ApplicationContext
         var outlookWindow = _processLocator.TryFindOutlookWindow();
         if (outlookWindow is null)
         {
-            MessageBox.Show("No se ha encontrado ninguna ventana de Outlook en ejecución.", "Ai_OutlookNewMailBlink",
+            MessageBox.Show("No se ha encontrado ninguna ventana de Outlook en ejecución.", "Ai_NewNotificationBlink",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
         AutomationTreeDumper.DumpToFile(outlookWindow.MainWindowHandle, AppStoragePaths.AutomationTreeDumpFile);
-        MessageBox.Show($"Árbol volcado en:\n{AppStoragePaths.AutomationTreeDumpFile}", "Ai_OutlookNewMailBlink",
+        MessageBox.Show($"Árbol volcado en:\n{AppStoragePaths.AutomationTreeDumpFile}", "Ai_NewNotificationBlink",
             MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private static void DumpTaskbarTree()
     {
         AutomationTreeDumper.DumpTaskbarToFile(AppStoragePaths.TaskbarTreeDumpFile);
-        MessageBox.Show($"Árbol de la barra de tareas volcado en:\n{AppStoragePaths.TaskbarTreeDumpFile}", "Ai_OutlookNewMailBlink",
+        MessageBox.Show($"Árbol de la barra de tareas volcado en:\n{AppStoragePaths.TaskbarTreeDumpFile}", "Ai_NewNotificationBlink",
             MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 

@@ -1,9 +1,9 @@
 using System.Text.RegularExpressions;
 using System.Windows.Automation;
-using Ai_OutlookNewMailBlink.Domain.Models;
-using Ai_OutlookNewMailBlink.Infrastructure.Win32;
+using Ai_NewNotificationBlink.Domain.Models;
+using Ai_NewNotificationBlink.Infrastructure.Win32;
 
-namespace Ai_OutlookNewMailBlink.Application.Services;
+namespace Ai_NewNotificationBlink.Application.Services;
 
 public sealed class NewNotificationDetectedEventArgs : EventArgs
 {

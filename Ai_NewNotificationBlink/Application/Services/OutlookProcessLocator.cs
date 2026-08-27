@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace Ai_OutlookNewMailBlink.Application.Services;
+namespace Ai_NewNotificationBlink.Application.Services;
 
 public sealed class OutlookWindowInfo
 {

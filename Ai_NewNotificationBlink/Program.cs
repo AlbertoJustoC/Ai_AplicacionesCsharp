@@ -1,6 +1,6 @@
-using Ai_OutlookNewMailBlink.UI;
+using Ai_NewNotificationBlink.UI;
 
-namespace Ai_OutlookNewMailBlink;
+namespace Ai_NewNotificationBlink;
 
 internal static class Program
 {

@@ -1,13 +1,13 @@
 using Microsoft.Win32;
 
-namespace Ai_OutlookNewMailBlink.Application.Services;
+namespace Ai_NewNotificationBlink.Application.Services;
 
 // Registers/unregisters the app in the per-user "Run" registry key so it starts with Windows.
 // HKCU (not HKLM) is used deliberately - no admin rights required.
 public sealed class StartupRegistrationService
 {
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string ValueName = "Ai_OutlookNewMailBlink";
+    private const string ValueName = "Ai_NewNotificationBlink";
 
     public bool IsEnabled()
     {

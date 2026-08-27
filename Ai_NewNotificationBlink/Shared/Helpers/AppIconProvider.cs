@@ -1,6 +1,6 @@
 using System.Drawing;
 
-namespace Ai_OutlookNewMailBlink.Shared.Helpers;
+namespace Ai_NewNotificationBlink.Shared.Helpers;
 
 public static class AppIconProvider
 {

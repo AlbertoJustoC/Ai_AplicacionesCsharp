@@ -1,8 +1,8 @@
-using Ai_OutlookNewMailBlink.Application.Services;
-using Ai_OutlookNewMailBlink.Domain.Models;
-using Ai_OutlookNewMailBlink.Shared.Helpers;
+using Ai_NewNotificationBlink.Application.Services;
+using Ai_NewNotificationBlink.Domain.Models;
+using Ai_NewNotificationBlink.Shared.Helpers;
 
-namespace Ai_OutlookNewMailBlink.UI.Forms;
+namespace Ai_NewNotificationBlink.UI.Forms;
 
 public sealed class SettingsForm : Form
 {

@@ -1,12 +1,12 @@
 using System.IO;
 
-namespace Ai_OutlookNewMailBlink.Shared.Constants;
+namespace Ai_NewNotificationBlink.Shared.Constants;
 
 public static class AppStoragePaths
 {
     private static readonly string RootFolder = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "AiOutlookNewMailBlink");
+        "AiNewNotificationBlink");
 
     public static string SettingsFile => Path.Combine(RootFolder, "settings.json");
 

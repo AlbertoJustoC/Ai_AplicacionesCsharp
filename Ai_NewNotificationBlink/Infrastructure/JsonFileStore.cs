@@ -2,7 +2,7 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Ai_OutlookNewMailBlink.Infrastructure;
+namespace Ai_NewNotificationBlink.Infrastructure;
 
 public sealed class JsonFileStore
 {

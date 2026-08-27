@@ -1,7 +1,7 @@
-using Ai_OutlookNewMailBlink.Application.Services;
-using Ai_OutlookNewMailBlink.Shared.Helpers;
+using Ai_NewNotificationBlink.Application.Services;
+using Ai_NewNotificationBlink.Shared.Helpers;
 
-namespace Ai_OutlookNewMailBlink.UI.Forms;
+namespace Ai_NewNotificationBlink.UI.Forms;
 
 // Small always-on-top window shown in a screen corner as a fallback alert when flashing
 // Outlook's own window isn't reliable (e.g. new Outlook not responding well to FlashWindowEx).
@@ -22,7 +22,7 @@ public sealed class FlashOverlayForm : Form
         TopMost = true;
         Width = 260;
         Height = 70;
-        Text = "Nuevos correos";
+        Text = "Notificaciones Nuevas";
         Icon = AppIconProvider.Current;
         BackColor = Color.OrangeRed;
 
@@ -32,7 +32,7 @@ public sealed class FlashOverlayForm : Form
             TextAlign = ContentAlignment.MiddleCenter,
             Font = new Font(FontFamily.GenericSansSerif, 12, FontStyle.Bold),
             ForeColor = Color.White,
-            Text = "Nuevos correos"
+            Text = "Notificaciones Nuevas"
         };
         Controls.Add(_messageLabel);
 
@@ -47,7 +47,7 @@ public sealed class FlashOverlayForm : Form
 
     public void ShowAndFlash(int unreadCount)
     {
-        _messageLabel.Text = $"Nuevos correos ({unreadCount})";
+        _messageLabel.Text = $"Notificaciones Nuevas ({unreadCount})";
         PositionInBottomRightCorner();
 
         if (!Visible)

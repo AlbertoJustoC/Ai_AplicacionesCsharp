@@ -1,6 +1,6 @@
-using Ai_OutlookNewMailBlink.Infrastructure.Win32;
+using Ai_NewNotificationBlink.Infrastructure.Win32;
 
-namespace Ai_OutlookNewMailBlink.Application.Services;
+namespace Ai_NewNotificationBlink.Application.Services;
 
 // Wraps the FlashWindowEx Win32 API to blink a window's taskbar button/caption.
 public sealed class WindowFlashService

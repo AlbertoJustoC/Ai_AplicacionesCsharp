@@ -1,7 +1,7 @@
-using Ai_OutlookNewMailBlink.Domain.Models;
-using Ai_OutlookNewMailBlink.Shared.Constants;
+using Ai_NewNotificationBlink.Domain.Models;
+using Ai_NewNotificationBlink.Shared.Constants;
 
-namespace Ai_OutlookNewMailBlink.Infrastructure;
+namespace Ai_NewNotificationBlink.Infrastructure;
 
 public sealed class BlinkSettingsRepository
 {

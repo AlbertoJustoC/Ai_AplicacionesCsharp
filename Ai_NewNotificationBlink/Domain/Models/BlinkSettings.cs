@@ -1,10 +1,10 @@
-namespace Ai_OutlookNewMailBlink.Domain.Models;
+namespace Ai_NewNotificationBlink.Domain.Models;
 
 public sealed class BlinkSettings
 {
     public int PollIntervalSeconds { get; set; } = 5;
 
-    public bool FlashOutlookWindowEnabled { get; set; } = true;
+    public bool FlashOutlookWindowEnabled { get; set; } = false;
 
     public bool ShowAuxiliaryOverlayEnabled { get; set; } = true;
 
