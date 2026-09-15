@@ -82,6 +82,23 @@ public sealed class ProjectWorkspaceService
         return _projectRepository.GetEffectiveProjectsDirectory();
     }
 
+    public string? GetLastMarkdownFolderPath()
+    {
+        var preferences = _preferencesRepository.Load();
+        return string.IsNullOrWhiteSpace(preferences.LastMarkdownFolderPath)
+            ? null
+            : preferences.LastMarkdownFolderPath;
+    }
+
+    public void SetLastMarkdownFolderPath(string? folderPath)
+    {
+        var preferences = _preferencesRepository.Load();
+        preferences.LastMarkdownFolderPath = string.IsNullOrWhiteSpace(folderPath)
+            ? null
+            : folderPath.Trim();
+        _preferencesRepository.Save(preferences);
+    }
+
     // Compares the projects currently loaded in the app against the ones found in the candidate folder.
     public ProjectFolderComparisonResult CompareProjectsFolder(string newFolderPath)
     {

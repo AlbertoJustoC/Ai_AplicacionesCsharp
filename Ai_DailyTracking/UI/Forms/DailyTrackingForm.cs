@@ -1,6 +1,8 @@
 using Ai_DailyTracking.Application.Services;
 using Ai_DailyTracking.Domain.Models;
+using Ai_DailyTracking.Infrastructure;
 using Ai_DailyTracking.Shared.Helpers;
+using System.ComponentModel;
 using System.Diagnostics;
 
 namespace Ai_DailyTracking.UI.Forms;
@@ -8,12 +10,14 @@ namespace Ai_DailyTracking.UI.Forms;
 public sealed class DailyTrackingForm : Form
 {
     private const string InputReceivedPathKey = "inputReceivedPath";
+    private const string MarkdownFilePathKey = "markdownFilePath";
     private const string NotesFieldKey = "notes";
     private const string StatusFieldKey = "status";
     private const string UpdatedDateFieldKey = "updatedDate";
     private const string UpdatedDateAutoKey = "updatedDateAuto";
 
     private readonly ProjectWorkspaceService _workspaceService;
+    private readonly TrackingEntryMarkdownExporter _markdownExporter;
     private readonly TrackingFormSchema _schema;
     private readonly Dictionary<string, Control> _fieldControls = new(StringComparer.OrdinalIgnoreCase);
     private readonly ComboBox _projectSelector = new();
@@ -29,8 +33,11 @@ public sealed class DailyTrackingForm : Form
     private readonly Label _projectSummaryLabel = new();
     private readonly Label _autosaveLabel = new();
     private readonly Label _projectsFolderPathLabel = new();
-    private readonly Label _inputReceivedPathLabel = new();
+    private readonly SingleLinePathLabel _inputReceivedPathLabel = new();
     private readonly Button _inputReceivedButton = new();
+    private readonly SingleLinePathLabel _markdownFilePathLabel = new();
+    private readonly Button _createMarkdownButton = new();
+    private readonly Button _updateMarkdownButton = new();
     private readonly CheckBox _updatedDateAutoCheckBox = new();
     private readonly ListView _entriesListView = new();
     private readonly ComboBox _statusFilterCombo = new();
@@ -41,17 +48,16 @@ public sealed class DailyTrackingForm : Form
     private bool _suppressEvents;
     private bool _suppressUpdatedDateAutoChanged;
     private bool _hasUnsavedChanges;
-    private bool _forcingInputReceivedSelection;
-    private bool _activityEditedPendingInputPathPrompt;
     private TrackingProject? _currentProject;
     private TrackingEntry? _currentEntry;
     private string? _statusFilterValue;
-    private int _sortColumnIndex = -1;
-    private SortOrder _sortOrder = SortOrder.None;
+    private int _sortColumnIndex = 0;
+    private SortOrder _sortOrder = SortOrder.Ascending;
 
-    public DailyTrackingForm(ProjectWorkspaceService workspaceService)
+    public DailyTrackingForm(ProjectWorkspaceService workspaceService, TrackingEntryMarkdownExporter markdownExporter)
     {
         _workspaceService = workspaceService;
+        _markdownExporter = markdownExporter;
         _schema = _workspaceService.LoadSchema();
         _statusFieldDefinition = _schema.Fields.FirstOrDefault(field => string.Equals(field.Key, "status", StringComparison.OrdinalIgnoreCase));
 
@@ -433,6 +439,11 @@ public sealed class DailyTrackingForm : Form
                     AddEditorRow(CreateInputReceivedRow());
                 }
 
+                if (IsCommentsField(field))
+                {
+                    AddEditorRow(CreateMarkdownRow());
+                }
+
                 continue;
             }
 
@@ -622,13 +633,6 @@ public sealed class DailyTrackingForm : Form
                     PlaceholderText = field.Placeholder ?? string.Empty
                 };
 
-                if (IsActivityField(field))
-                {
-                    longTextBox.TextChanged += ActivityTextBox_TextChanged;
-                    longTextBox.KeyDown += ActivityTextBox_KeyDown;
-                    longTextBox.Leave += ActivityTextBox_Leave;
-                }
-
                 if (IsCommentsField(field))
                 {
                     longTextBox.Font = new Font(longTextBox.Font.FontFamily, Math.Max(6F, longTextBox.Font.Size - 1F), longTextBox.Font.Style, GraphicsUnit.Point);
@@ -652,49 +656,163 @@ public sealed class DailyTrackingForm : Form
 
     private Control CreateInputReceivedRow()
     {
-        var row = new TableLayoutPanel
+        var row = new Panel
         {
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            ColumnCount = 2,
-            RowCount = 1,
-            BackColor = Color.FromArgb(249, 251, 252),
+            Dock = DockStyle.Top,
+            BackColor = Color.Transparent,
             Margin = new Padding(4, 0, 4, 4),
-            Padding = new Padding(10, 6, 10, 6)
+            Padding = new Padding(0),
+            Height = 44,
+            MinimumSize = new Size(0, 44)
         };
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        row.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        _inputReceivedPathLabel.Dock = DockStyle.Fill;
-        _inputReceivedPathLabel.Height = 36;
-        _inputReceivedPathLabel.Font = new Font(
-            _inputReceivedPathLabel.Font.FontFamily,
-            Math.Max(6F, _inputReceivedPathLabel.Font.Size - 1F),
-            _inputReceivedPathLabel.Font.Style,
-            GraphicsUnit.Point);
-        _inputReceivedPathLabel.TextAlign = ContentAlignment.MiddleLeft;
-        _inputReceivedPathLabel.AutoEllipsis = true;
-        _inputReceivedPathLabel.Margin = new Padding(0, 4, 8, 0);
-        _inputReceivedPathLabel.Click += InputReceivedPathLabel_Click;
-        _inputReceivedPathLabel.Resize += InputReceivedPathLabel_Resize;
-
-        const string inputReceivedButtonText = "input recibido";
-        ConfigureActionButton(_inputReceivedButton, inputReceivedButtonText, Color.FromArgb(18, 103, 177));
-        var minButtonWidth = TextRenderer.MeasureText(inputReceivedButtonText, _inputReceivedButton.Font).Width + 24;
-        _inputReceivedButton.AutoSize = false;
-        _inputReceivedButton.Width = Math.Max(132, minButtonWidth);
-        _inputReceivedButton.Height = 32;
-        _inputReceivedButton.Padding = new Padding(8, 0, 8, 0);
-        _inputReceivedButton.TextAlign = ContentAlignment.MiddleCenter;
-        _inputReceivedButton.Margin = new Padding(0);
-        _inputReceivedButton.Click += InputReceivedButton_Click;
-
-        row.Controls.Add(_inputReceivedPathLabel, 0, 0);
-        row.Controls.Add(_inputReceivedButton, 1, 0);
+        var inputPanel = CreateInputReceivedPanel();
+        inputPanel.Dock = DockStyle.Fill;
+        row.Controls.Add(inputPanel);
 
         UpdateInputReceivedPathDisplay(null);
         return row;
+    }
+
+    private Control CreateMarkdownRow()
+    {
+        var row = new Panel
+        {
+            Dock = DockStyle.Top,
+            BackColor = Color.Transparent,
+            Margin = new Padding(4, 0, 4, 4),
+            Padding = new Padding(0),
+            Height = 44,
+            MinimumSize = new Size(0, 44)
+        };
+
+        var markdownPanel = CreateMarkdownPanel();
+        markdownPanel.Dock = DockStyle.Fill;
+        row.Controls.Add(markdownPanel);
+
+        UpdateMarkdownFilePathDisplay(null);
+        return row;
+    }
+
+    private Control CreateInputReceivedPanel()
+    {
+        var panel = CreatePathActionPanel();
+
+        ConfigurePathLabel(_inputReceivedPathLabel);
+        _inputReceivedPathLabel.MouseClick += InputReceivedPathLabel_Click;
+        _inputReceivedPathLabel.Resize += InputReceivedPathLabel_Resize;
+        _inputReceivedPathLabel.MouseUp += InputReceivedPathLabel_MouseUp;
+
+        ConfigureActionButtonWithFixedWidth(_inputReceivedButton, "input recibido", Color.FromArgb(18, 103, 177), 156);
+        _inputReceivedButton.Click += InputReceivedButton_Click;
+
+        panel.Controls.Add(_inputReceivedButton, 0, 0);
+        panel.Controls.Add(_inputReceivedPathLabel, 1, 0);
+        return panel;
+    }
+
+    private Control CreateMarkdownPanel()
+    {
+        var panel = CreatePathActionPanel(2);
+
+        ConfigurePathLabel(_markdownFilePathLabel);
+        _markdownFilePathLabel.MouseClick += MarkdownFilePathLabel_Click;
+        _markdownFilePathLabel.Resize += MarkdownFilePathLabel_Resize;
+        _markdownFilePathLabel.MouseUp += MarkdownFilePathLabel_MouseUp;
+
+        ConfigureActionButtonWithFixedWidth(_createMarkdownButton, "Crear MD", Color.FromArgb(46, 139, 87), 104);
+        _createMarkdownButton.Click += CreateMarkdownButton_Click;
+
+        ConfigureActionButtonWithFixedWidth(_updateMarkdownButton, "Actualizar MD", Color.FromArgb(34, 111, 168), 116);
+        _updateMarkdownButton.Click += UpdateMarkdownButton_Click;
+        _updateMarkdownButton.Margin = new Padding(6, 0, 0, 0);
+
+        panel.Controls.Add(_createMarkdownButton, 0, 0);
+        panel.Controls.Add(_updateMarkdownButton, 1, 0);
+        panel.Controls.Add(_markdownFilePathLabel, 2, 0);
+        return panel;
+    }
+
+    private static TableLayoutPanel CreatePathActionPanel(int actionButtonCount = 1)
+    {
+        var panel = new TableLayoutPanel
+        {
+            AutoSize = false,
+            ColumnCount = actionButtonCount + 1,
+            RowCount = 1,
+            BackColor = Color.FromArgb(249, 251, 252),
+            Margin = new Padding(0),
+            Padding = new Padding(8, 6, 8, 6),
+            Height = 44,
+            MinimumSize = new Size(0, 44)
+        };
+
+        for (var i = 0; i < actionButtonCount; i++)
+        {
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        }
+
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        return panel;
+    }
+
+    private static void ConfigurePathLabel(Label label)
+    {
+        label.AutoSize = false;
+        label.Dock = DockStyle.Fill;
+        label.Height = 36;
+        label.Font = new Font(
+            label.Font.FontFamily,
+            Math.Max(6F, label.Font.Size - 1F),
+            label.Font.Style,
+            GraphicsUnit.Point);
+        label.TextAlign = ContentAlignment.MiddleRight;
+        label.AutoEllipsis = false;
+        label.Margin = new Padding(10, 2, 0, 0);
+    }
+
+    private static void ConfigureActionButtonWithFixedWidth(Button button, string text, Color backColor, int minWidth)
+    {
+        ConfigureActionButton(button, text, backColor);
+        var minButtonWidth = TextRenderer.MeasureText(text, button.Font).Width + 24;
+        button.AutoSize = false;
+        button.Width = Math.Max(minWidth, minButtonWidth);
+        button.Height = 32;
+        button.Padding = new Padding(8, 0, 8, 0);
+        button.TextAlign = ContentAlignment.MiddleCenter;
+        button.Margin = new Padding(0);
+    }
+
+    private sealed class SingleLinePathLabel : Label
+    {
+        private const string TrailingReserveSample = "WW";
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var trailingReservePixels = TextRenderer.MeasureText(
+                TrailingReserveSample,
+                Font,
+                Size.Empty,
+                TextFormatFlags.NoPadding).Width;
+            var availableWidth = Math.Max(1, ClientRectangle.Width - trailingReservePixels);
+            var renderText = DailyTrackingForm.TruncatePathFromStart(Text, Font, availableWidth);
+            var drawBounds = new Rectangle(ClientRectangle.X, ClientRectangle.Y, availableWidth, ClientRectangle.Height);
+
+            var flags = TextFormatFlags.SingleLine |
+                TextFormatFlags.VerticalCenter |
+                TextFormatFlags.NoPrefix |
+                TextFormatFlags.PreserveGraphicsClipping;
+
+            flags |= TextAlign switch
+            {
+                ContentAlignment.TopLeft or ContentAlignment.MiddleLeft or ContentAlignment.BottomLeft => TextFormatFlags.Left,
+                ContentAlignment.TopCenter or ContentAlignment.MiddleCenter or ContentAlignment.BottomCenter => TextFormatFlags.HorizontalCenter,
+                _ => TextFormatFlags.Right
+            };
+
+            TextRenderer.DrawText(e.Graphics, renderText, Font, drawBounds, ForeColor, flags);
+        }
     }
 
     private Control CreateUpdatedDateAutoToggle()
@@ -757,84 +875,6 @@ public sealed class DailyTrackingForm : Form
         PersistCurrentEntry();
     }
 
-    private void ActivityTextBox_TextChanged(object? sender, EventArgs e)
-    {
-        if (_suppressEvents)
-        {
-            return;
-        }
-
-        _activityEditedPendingInputPathPrompt = true;
-    }
-
-    private void ActivityTextBox_KeyDown(object? sender, KeyEventArgs e)
-    {
-        if (sender is not TextBox textBox || e.KeyCode != Keys.Enter)
-        {
-            return;
-        }
-
-        BeginInvoke(() => EnsureInputReceivedPathAfterActivityEdit(textBox));
-    }
-
-    private void ActivityTextBox_Leave(object? sender, EventArgs e)
-    {
-        if (sender is not TextBox textBox)
-        {
-            return;
-        }
-
-        EnsureInputReceivedPathAfterActivityEdit(textBox);
-    }
-
-    private void EnsureInputReceivedPathAfterActivityEdit(TextBox activityTextBox)
-    {
-        if (_suppressEvents || _forcingInputReceivedSelection || !_activityEditedPendingInputPathPrompt || _currentEntry is null)
-        {
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(activityTextBox.Text))
-        {
-            _activityEditedPendingInputPathPrompt = false;
-            return;
-        }
-
-        if (!string.IsNullOrWhiteSpace(_inputReceivedPathLabel.Tag as string))
-        {
-            _activityEditedPendingInputPathPrompt = false;
-            return;
-        }
-
-        _forcingInputReceivedSelection = true;
-
-        try
-        {
-            if (TrySelectInputReceivedPath())
-            {
-                _activityEditedPendingInputPathPrompt = false;
-                return;
-            }
-
-            MessageBox.Show(
-                this,
-                "Debes seleccionar una carpeta en \"input recibido\" para continuar con este registro.",
-                "Input recibido requerido",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-
-            BeginInvoke(() =>
-            {
-                activityTextBox.Focus();
-                activityTextBox.SelectionStart = activityTextBox.TextLength;
-            });
-        }
-        finally
-        {
-            _forcingInputReceivedSelection = false;
-        }
-    }
-
     private void InputReceivedButton_Click(object? sender, EventArgs e)
     {
         TrySelectInputReceivedPath();
@@ -856,7 +896,6 @@ public sealed class DailyTrackingForm : Form
 
         UpdateInputReceivedPathDisplay(selectedPath);
         PersistCurrentEntry();
-        _activityEditedPendingInputPathPrompt = false;
         return true;
     }
 
@@ -900,8 +939,13 @@ public sealed class DailyTrackingForm : Form
         return null;
     }
 
-    private void InputReceivedPathLabel_Click(object? sender, EventArgs e)
+    private void InputReceivedPathLabel_Click(object? sender, MouseEventArgs e)
     {
+        if (e.Button != MouseButtons.Left)
+        {
+            return;
+        }
+
         var path = _inputReceivedPathLabel.Tag as string;
 
         if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
@@ -909,7 +953,21 @@ public sealed class DailyTrackingForm : Form
             return;
         }
 
-        Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+        TryOpenPath(path);
+    }
+
+    private void InputReceivedPathLabel_MouseUp(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Right)
+        {
+            return;
+        }
+
+        ShowClearPathMenu(_inputReceivedPathLabel, e.Location, "Quitar ruta de input recibido", () =>
+        {
+            UpdateInputReceivedPathDisplay(null);
+            PersistCurrentEntry();
+        });
     }
 
     private void InputReceivedPathLabel_Resize(object? sender, EventArgs e)
@@ -917,47 +975,325 @@ public sealed class DailyTrackingForm : Form
         if (_inputReceivedPathLabel.Tag is string currentPath)
         {
             UpdateInputReceivedPathDisplay(currentPath);
+            return;
+        }
+
+        UpdateInputReceivedPathDisplay(null);
+    }
+
+    private void CreateMarkdownButton_Click(object? sender, EventArgs e)
+    {
+        TryCreateOrUpdateMarkdownFile(useSelectedPathWithoutDialog: false);
+    }
+
+    private void UpdateMarkdownButton_Click(object? sender, EventArgs e)
+    {
+        TryCreateOrUpdateMarkdownFile(useSelectedPathWithoutDialog: true);
+    }
+
+    private bool TryCreateOrUpdateMarkdownFile(bool useSelectedPathWithoutDialog)
+    {
+        if (_currentEntry is null)
+        {
+            return false;
+        }
+
+        var selectedFilePath = useSelectedPathWithoutDialog
+            ? _markdownFilePathLabel.Tag as string
+            : ShowMarkdownSaveFileDialog();
+
+        if (string.IsNullOrWhiteSpace(selectedFilePath))
+        {
+            if (useSelectedPathWithoutDialog)
+            {
+                MessageBox.Show(
+                    this,
+                    "No hay archivo Markdown seleccionado para actualizar. Usa 'Crear MD' para elegirlo primero.",
+                    "Actualizar MD",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+
+            return false;
+        }
+
+        if (useSelectedPathWithoutDialog && !File.Exists(selectedFilePath))
+        {
+            MessageBox.Show(
+                this,
+                "El archivo Markdown seleccionado no existe. Usa 'Crear MD' para seleccionarlo o crearlo.",
+                "Actualizar MD",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return false;
+        }
+
+        var templatePath = ResolveMarkdownTemplatePath();
+        var targetFileExists = File.Exists(selectedFilePath);
+
+        if (!targetFileExists && templatePath is null)
+        {
+            MessageBox.Show(
+                this,
+                "No se encontro la plantilla Tareas - copia.md. Verifica que el archivo exista en la carpeta del ejecutable o del proyecto.",
+                useSelectedPathWithoutDialog ? "Actualizar MD" : "Crear MD",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return false;
+        }
+
+        if (!_markdownExporter.TryCreateOrUpdate(selectedFilePath, templatePath ?? string.Empty, _currentEntry, out var synchronizedNotesText, out var errorMessage))
+        {
+            MessageBox.Show(
+                this,
+                $"No se pudo crear/modificar el archivo Markdown.\n\n{errorMessage}",
+                useSelectedPathWithoutDialog ? "Actualizar MD" : "Crear MD",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return false;
+        }
+
+        var selectedDirectory = Path.GetDirectoryName(selectedFilePath);
+
+        if (!string.IsNullOrWhiteSpace(selectedDirectory))
+        {
+            _workspaceService.SetLastMarkdownFolderPath(selectedDirectory);
+        }
+
+        ApplySynchronizedNotesToCurrentEntry(synchronizedNotesText);
+        UpdateMarkdownFilePathDisplay(selectedFilePath);
+        PersistCurrentEntry();
+        return true;
+    }
+
+    private string? ShowMarkdownSaveFileDialog()
+    {
+        var currentPath = _markdownFilePathLabel.Tag as string;
+        var initialDirectory = ResolveMarkdownDialogInitialDirectory(currentPath);
+        var fileName = ResolveMarkdownDialogFileName(currentPath);
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Crear/modificar archivo Markdown",
+            Filter = "Markdown (*.md)|*.md|Todos los archivos (*.*)|*.*",
+            DefaultExt = "md",
+            AddExtension = true,
+            OverwritePrompt = false,
+            InitialDirectory = initialDirectory ?? string.Empty,
+            FileName = fileName
+        };
+
+        return dialog.ShowDialog(this) == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.FileName)
+            ? dialog.FileName
+            : null;
+    }
+
+    private string? ResolveMarkdownDialogInitialDirectory(string? currentPath)
+    {
+        var lastMarkdownFolderPath = _workspaceService.GetLastMarkdownFolderPath();
+
+        if (!string.IsNullOrWhiteSpace(lastMarkdownFolderPath) && Directory.Exists(lastMarkdownFolderPath))
+        {
+            return lastMarkdownFolderPath;
+        }
+
+        if (!string.IsNullOrWhiteSpace(currentPath))
+        {
+            var currentDirectory = Path.GetDirectoryName(currentPath);
+
+            if (!string.IsNullOrWhiteSpace(currentDirectory) && Directory.Exists(currentDirectory))
+            {
+                return currentDirectory;
+            }
+        }
+
+        var inputReceivedPath = _inputReceivedPathLabel.Tag as string;
+
+        if (!string.IsNullOrWhiteSpace(inputReceivedPath) && Directory.Exists(inputReceivedPath))
+        {
+            return inputReceivedPath;
+        }
+
+        var projectsFolderPath = _workspaceService.GetProjectsFolderPath();
+        return Directory.Exists(projectsFolderPath) ? projectsFolderPath : null;
+    }
+
+    private string ResolveMarkdownDialogFileName(string? currentPath)
+    {
+        if (!string.IsNullOrWhiteSpace(currentPath))
+        {
+            return Path.GetFileName(currentPath);
+        }
+
+        var projectName = _currentProject?.ProjectName ?? "registro";
+        var entryNumber = _currentEntry?.EntryNumber ?? 0;
+        var safeProjectName = BuildSafeFileNamePart(projectName);
+        return $"{safeProjectName}-registro-{entryNumber:000}.md";
+    }
+
+    private static string BuildSafeFileNamePart(string value)
+    {
+        var invalidChars = Path.GetInvalidFileNameChars();
+        var sanitized = new string(value
+            .Trim()
+            .Select(character => invalidChars.Contains(character) ? '_' : character)
+            .ToArray());
+
+        return string.IsNullOrWhiteSpace(sanitized) ? "registro" : sanitized;
+    }
+
+    private static string? ResolveMarkdownTemplatePath()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(AppContext.BaseDirectory, "Tareas - copia.md"),
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Tareas - copia.md"),
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "Tareas - copia.md"),
+            Path.Combine(Directory.GetCurrentDirectory(), "Tareas - copia.md")
+        };
+
+        foreach (var candidate in candidates)
+        {
+            var fullPath = Path.GetFullPath(candidate);
+
+            if (File.Exists(fullPath))
+            {
+                return fullPath;
+            }
+        }
+
+        return null;
+    }
+
+    private void MarkdownFilePathLabel_Click(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left)
+        {
+            return;
+        }
+
+        var filePath = _markdownFilePathLabel.Tag as string;
+
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+        {
+            return;
+        }
+
+        TryOpenPath(filePath);
+    }
+
+    private void TryOpenPath(string path)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or FileNotFoundException)
+        {
+            MessageBox.Show(this, $"No se pudo abrir la ruta.\n\n{ex.Message}", "Abrir ruta", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
-    private static string FormatPathForTwoLinesIfNeeded(string path, Font font, int maxWidth)
+    private void MarkdownFilePathLabel_MouseUp(object? sender, MouseEventArgs e)
     {
-        const string continuationIndent = "    ";
+        if (e.Button != MouseButtons.Right)
+        {
+            return;
+        }
 
-        if (string.IsNullOrWhiteSpace(path) || TextRenderer.MeasureText(path, font).Width <= maxWidth)
+        ShowClearPathMenu(_markdownFilePathLabel, e.Location, "Quitar ruta de archivo MD", () =>
+        {
+            UpdateMarkdownFilePathDisplay(null);
+            PersistCurrentEntry();
+        });
+    }
+
+    private void ShowClearPathMenu(Control sourceControl, Point location, string menuText, Action clearAction)
+    {
+        if (_currentEntry is null || sourceControl.Tag is not string { Length: > 0 })
+        {
+            return;
+        }
+
+        var menu = new ContextMenuStrip();
+        var clearItem = new ToolStripMenuItem(menuText);
+        clearItem.Click += (_, _) => clearAction();
+        menu.Items.Add(clearItem);
+        menu.Closed += (_, _) =>
+        {
+            if (menu.IsDisposed)
+            {
+                return;
+            }
+
+            if (IsHandleCreated && !IsDisposed)
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    if (!menu.IsDisposed)
+                    {
+                        menu.Dispose();
+                    }
+                }));
+                return;
+            }
+
+            menu.Dispose();
+        };
+        menu.Show(sourceControl, location);
+    }
+
+    private void MarkdownFilePathLabel_Resize(object? sender, EventArgs e)
+    {
+        if (_markdownFilePathLabel.Tag is string currentPath)
+        {
+            UpdateMarkdownFilePathDisplay(currentPath);
+            return;
+        }
+
+        UpdateMarkdownFilePathDisplay(null);
+    }
+
+    private static string TruncatePathFromStart(string path, Font font, int maxWidth)
+    {
+        if (string.IsNullOrWhiteSpace(path) || maxWidth <= 0)
         {
             return path;
         }
 
-        var fullWidth = TextRenderer.MeasureText(path, font).Width;
-        var bestIndex = -1;
-        var bestWidth = int.MaxValue;
-
-        for (var index = 1; index < path.Length - 1; index++)
-        {
-            if (path[index] != '\\' && path[index] != '/')
-            {
-                continue;
-            }
-
-            var firstLine = path[..(index + 1)];
-            var secondLine = path[(index + 1)..];
-            var indentedSecondLine = continuationIndent + secondLine;
-            var maxLineWidth = Math.Max(TextRenderer.MeasureText(firstLine, font).Width, TextRenderer.MeasureText(indentedSecondLine, font).Width);
-
-            if (maxLineWidth < bestWidth)
-            {
-                bestWidth = maxLineWidth;
-                bestIndex = index;
-            }
-        }
-
-        if (bestIndex <= 0 || bestWidth >= fullWidth)
+        if (TextRenderer.MeasureText(path, font).Width <= maxWidth)
         {
             return path;
         }
 
-        return path[..(bestIndex + 1)] + Environment.NewLine + continuationIndent + path[(bestIndex + 1)..];
+        const string ellipsis = "...";
+
+        if (TextRenderer.MeasureText(ellipsis, font).Width >= maxWidth)
+        {
+            return ellipsis;
+        }
+
+        var low = 0;
+        var high = path.Length - 1;
+        var bestStart = path.Length - 1;
+
+        while (low <= high)
+        {
+            var mid = (low + high) / 2;
+            var candidate = ellipsis + path[mid..];
+
+            if (TextRenderer.MeasureText(candidate, font).Width <= maxWidth)
+            {
+                bestStart = mid;
+                high = mid - 1;
+            }
+            else
+            {
+                low = mid + 1;
+            }
+        }
+
+        return ellipsis + path[bestStart..];
     }
 
     private void UpdateInputReceivedPathDisplay(string? path)
@@ -968,15 +1304,36 @@ public sealed class DailyTrackingForm : Form
         _inputReceivedPathLabel.Tag = selectedPath;
         _inputReceivedPathLabel.Text = selectedPath is null
             ? "Sin ruta de input recibido"
-            : FormatPathForTwoLinesIfNeeded(selectedPath, _inputReceivedPathLabel.Font, Math.Max(120, _inputReceivedPathLabel.Width - 6));
+            : selectedPath;
         _inputReceivedPathLabel.ForeColor = selectedPath is null ? Color.FromArgb(132, 140, 152) : Color.FromArgb(22, 58, 92);
         _inputReceivedPathLabel.Cursor = pathExists ? Cursors.Hand : Cursors.Default;
 
         _toolTip.SetToolTip(
             _inputReceivedPathLabel,
             selectedPath is null
-                ? "Selecciona una carpeta con el boton \"input recibido\"."
-                : $"{selectedPath}\n(Clic para abrir en el explorador de archivos)");
+                ? "Seleccion opcional: carpeta de input recibido. Clic derecho para limpiar."
+                : $"{selectedPath}\n(Clic para abrir en el explorador de archivos, clic derecho para limpiar)");
+    }
+
+    private void UpdateMarkdownFilePathDisplay(string? path)
+    {
+        var selectedPath = string.IsNullOrWhiteSpace(path) ? null : path.Trim();
+        var fileExists = selectedPath is not null && File.Exists(selectedPath);
+
+        _markdownFilePathLabel.Tag = selectedPath;
+        _markdownFilePathLabel.Text = selectedPath is null
+            ? "Sin archivo MD"
+            : selectedPath;
+        _markdownFilePathLabel.ForeColor = selectedPath is null ? Color.FromArgb(132, 140, 152) : Color.FromArgb(22, 58, 92);
+        _markdownFilePathLabel.Cursor = fileExists ? Cursors.Hand : Cursors.Default;
+
+        _toolTip.SetToolTip(
+            _markdownFilePathLabel,
+            selectedPath is null
+                ? "Seleccion opcional: archivo Markdown de esta ficha. Clic derecho para limpiar."
+                : fileExists
+                    ? $"{selectedPath}\n(Clic para abrir el archivo, clic derecho para limpiar)"
+                    : $"{selectedPath}\n(Clic derecho para limpiar)");
     }
 
     private static bool IsCommentsField(TrackingFieldDefinition field)
@@ -1317,9 +1674,10 @@ public sealed class DailyTrackingForm : Form
         }
 
         var inputReceivedPath = entry.Values.TryGetValue(InputReceivedPathKey, out var storedPath) ? storedPath : null;
+        var markdownFilePath = entry.Values.TryGetValue(MarkdownFilePathKey, out var storedMarkdownPath) ? storedMarkdownPath : null;
         UpdateInputReceivedPathDisplay(inputReceivedPath);
+        UpdateMarkdownFilePathDisplay(markdownFilePath);
         SetUpdatedDateAutoCheckboxState(ReadUpdatedDateAutoFlag(entry));
-        _activityEditedPendingInputPathPrompt = false;
 
         _suppressEvents = false;
         UpdateAutosaveLabel();
@@ -1365,13 +1723,46 @@ public sealed class DailyTrackingForm : Form
         }
 
         var inputReceivedPath = _inputReceivedPathLabel.Tag as string;
+        var markdownFilePath = _markdownFilePathLabel.Tag as string;
         _currentEntry.Values[InputReceivedPathKey] = string.IsNullOrWhiteSpace(inputReceivedPath) ? null : inputReceivedPath;
+        _currentEntry.Values[MarkdownFilePathKey] = string.IsNullOrWhiteSpace(markdownFilePath) ? null : markdownFilePath;
 
         _currentEntry.UpdatedAtLocal = DateTime.Now;
         _hasUnsavedChanges = true;
         RefreshEntriesList();
         UpdateProjectSummary();
         UpdateAutosaveLabel();
+    }
+
+    private void ApplySynchronizedNotesToCurrentEntry(string synchronizedNotesText)
+    {
+        if (_currentEntry is null)
+        {
+            return;
+        }
+
+        var normalizedNotes = NormalizeNotesForEditor(synchronizedNotesText);
+        _currentEntry.Values[NotesFieldKey] = string.IsNullOrWhiteSpace(normalizedNotes) ? null : normalizedNotes;
+
+        if (!_fieldControls.TryGetValue(NotesFieldKey, out var notesControl) || notesControl is not TextBox notesTextBox)
+        {
+            return;
+        }
+
+        var previousSuppressState = _suppressEvents;
+        _suppressEvents = true;
+        notesTextBox.Text = normalizedNotes;
+        notesTextBox.SelectionStart = notesTextBox.TextLength;
+        _suppressEvents = previousSuppressState;
+    }
+
+    private static string NormalizeNotesForEditor(string? notesText)
+    {
+        var normalized = (notesText ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Trim('\n', '\r');
+
+        return normalized.Replace("\n", Environment.NewLine, StringComparison.Ordinal);
     }
 
     private void EnsureInitialStatusNote(TrackingEntry entry)
@@ -1766,7 +2157,7 @@ public sealed class DailyTrackingForm : Form
         if (_currentEntry is null)
         {
             UpdateInputReceivedPathDisplay(null);
-            _activityEditedPendingInputPathPrompt = false;
+            UpdateMarkdownFilePathDisplay(null);
             _autosaveLabel.Text = "Sin registro seleccionado";
             return;
         }

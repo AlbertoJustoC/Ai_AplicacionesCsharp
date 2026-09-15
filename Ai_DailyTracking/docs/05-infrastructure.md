@@ -15,12 +15,19 @@ Ejemplos esperados:
 - `AppPreferencesRepository`
 - `TrackingSchemaRepository`
 - `TrackingReportPdfExporter`
+- `TrackingEntryMarkdownExporter`
 
 ## Implementacion Actual
 - `JsonFileStore` centraliza serializacion JSON con `System.Text.Json`.
 - `TrackingProjectRepository` guarda cada proyecto en un archivo independiente dentro de una carpeta configurable (`AppPreferences.ProjectsFolderPath`, si el usuario elige una carpeta compartida) o, por defecto, en `%AppData%\AiDailyTracking\Projects`. Tambien escribe copias de seguridad con marca de fecha/hora en `%AppData%\AiDailyTracking\backup` al cerrar la aplicacion, y borra el archivo de un proyecto (`Delete`) cuando se elimina desde la UI.
-- `AppPreferencesRepository` recuerda el ultimo proyecto abierto y la carpeta de proyectos elegida por el usuario.
+- `AppPreferencesRepository` recuerda el ultimo proyecto abierto, la carpeta de proyectos elegida por el usuario y la ultima carpeta usada para crear/modificar Markdown por ficha (`AppPreferences.LastMarkdownFolderPath`).
 - `TrackingSchemaRepository` crea y carga `tracking-schema.json` para que el formulario sea configurable sin recompilar. Al cargar, sanea los campos `EditableOption`: si `Options`/`LastValue` tienen valores que no estan en los defaults hardcodeados de `CreateDefaultSchema` (residuo de versiones donde estos valores se guardaban en el esquema global en vez de por proyecto), los restaura a los defaults y persiste el cambio.
+- `TrackingEntryMarkdownExporter` crea/actualiza el archivo Markdown de una ficha concreta usando la plantilla `Tareas - copia.md`: en archivos nuevos rellena frontmatter y secciones Actividad/Notas con datos de la ficha; en archivos existentes actualiza propiedades del frontmatter, mantiene `## Actividad` sin tocar y fusiona `## Notas` por marca de fecha/hora entre corchetes (`[yyyy-MM-dd HH:mm]`): si coincide reemplaza esa nota, y si no coincide agrega la nueva sin borrar el resto.
+
+## Markdown Por Ficha (Opcional)
+- La vinculacion de carpeta "input recibido" y el archivo Markdown son opcionales: la ficha se puede editar/guardar sin seleccionar ninguno.
+- El boton "Crear/modificar MD" opera sobre el registro seleccionado y usa `SaveFileDialog` para elegir/nombrar el archivo.
+- Prioridad del directorio inicial del dialogo: ultima carpeta Markdown guardada en preferencias, carpeta del archivo ya vinculado a la ficha, carpeta de input recibido, y por ultimo carpeta de proyectos.
 
 ## Carpeta De Proyectos Compartida
 - El boton "Carpeta de proyectos" permite elegir una carpeta (p. ej. una ruta de red) donde se guardaran los proyectos, para que varias personas accedan a los mismos datos.

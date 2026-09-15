@@ -2,6 +2,15 @@
 
 Historial resumido de cambios tecnicos importantes. No sustituye al historial de control de versiones (git log); su objetivo es dar contexto rapido de la evolucion del proyecto.
 
+## 2026-09-14
+- Se dividio la zona bajo Actividad en dos mitades (50/50): izquierda para ruta de input recibido + boton "input recibido", y derecha para ruta+archivo Markdown + boton "Crear/modificar MD".
+- Las rutas en ambas mitades ahora se alinean a la derecha y se recortan por el inicio para priorizar mostrar el final (carpeta/archivo).
+- Se reajusto el layout de esa fila para reservar mas ancho util a las rutas y dejar ambos botones alineados al borde derecho de su zona.
+- Se agrego menu contextual (clic derecho) en ambas rutas para limpiar el valor del registro actual cuando no aplica.
+- Se elimino la obligatoriedad de seleccionar carpeta "input recibido" al editar Actividad; tanto input recibido como Markdown quedan opcionales y no bloquean la edicion/guardado de la ficha.
+- Se agrego `TrackingEntryMarkdownExporter` para crear/actualizar Markdown por ficha usando `Tareas - copia.md`: si el archivo no existe se crea desde plantilla con frontmatter + Actividad/Notas; si existe, se actualiza frontmatter y en `## Notas` se fusiona por fecha/hora entre corchetes (coincidentes se reemplazan, nuevas se agregan sin borrar las demas).
+- Se agrego persistencia de la ultima carpeta usada para Markdown en `AppPreferences.LastMarkdownFolderPath`, expuesta por `ProjectWorkspaceService.GetLastMarkdownFolderPath/SetLastMarkdownFolderPath`.
+
 ## 2026-08-08 (4)
 - El selector de proyectos ahora muestra unicamente los proyectos que existen fisicamente en la carpeta seleccionada: al cambiar la carpeta de proyectos, los que solo existian en la carpeta anterior ya NO se copian automaticamente a la carpeta nueva (`TrackingProjectRepository.CompareWithFolder`). Los conflictos (mismo proyecto con contenido distinto en ambos lados) se siguen resolviendo como antes.
 

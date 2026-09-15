@@ -16,7 +16,8 @@ internal static class Program
         var projectRepository = new TrackingProjectRepository(jsonFileStore, preferencesRepository);
         var schemaRepository = new TrackingSchemaRepository(jsonFileStore);
         var workspaceService = new ProjectWorkspaceService(projectRepository, preferencesRepository, schemaRepository);
+        var markdownExporter = new TrackingEntryMarkdownExporter();
 
-        System.Windows.Forms.Application.Run(new DailyTrackingForm(workspaceService));
+        System.Windows.Forms.Application.Run(new DailyTrackingForm(workspaceService, markdownExporter));
     }
 }
