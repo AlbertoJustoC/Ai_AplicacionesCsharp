@@ -15,9 +15,8 @@ public sealed class TrackingReportForm : Form
     private readonly TrackingFieldDefinition? _dateField;
     private readonly TrackingFieldDefinition? _statusField;
     private readonly List<TrackingEntry> _matchingEntries = [];
-    private readonly ComboBox _filterFieldCombo = new();
-    private readonly Button _filterOptionsButton = new();
-    private readonly ContextMenuStrip _filterOptionsMenu = new();
+    // 3 independent field+options filter rows combined with AND logic; row 1 keeps the original default (first field selected).
+    private readonly List<FieldFilterControls> _fieldFilters = [new(), new(), new()];
     private readonly DateTimePicker _fromDatePicker = new();
     private readonly DateTimePicker _toDatePicker = new();
     private readonly CheckBox _useDateRangeCheckBox = new();
@@ -41,7 +40,11 @@ public sealed class TrackingReportForm : Form
 
         BuildLayout();
         BuildResultsColumns();
-        RebuildFilterOptions();
+
+        foreach (var filter in _fieldFilters)
+        {
+            RebuildFilterOptions(filter);
+        }
     }
 
     private void BuildLayout()
@@ -82,22 +85,12 @@ public sealed class TrackingReportForm : Form
             WrapContents = true
         };
 
-        _filterFieldCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _filterFieldCombo.Width = 180;
-
-        foreach (var field in _optionFields)
+        for (var i = 0; i < _fieldFilters.Count; i++)
         {
-            _filterFieldCombo.Items.Add(field.Label);
+            InitializeFieldFilterCombo(_fieldFilters[i], selectFirstField: i == 0);
         }
 
-        if (_filterFieldCombo.Items.Count > 0)
-        {
-            _filterFieldCombo.SelectedIndex = 0;
-        }
-
-        _filterFieldCombo.SelectedIndexChanged += (_, _) => RebuildFilterOptions();
-        flow.Controls.Add(CreateLabeledControl("Filtrar por campo", _filterFieldCombo));
-        flow.Controls.Add(CreateFilterOptionsControl());
+        flow.Controls.Add(BuildFieldFiltersGroup());
         flow.Controls.Add(CreateDateRangeControl());
 
         var resetButton = new Button { Text = "Quitar filtros", AutoSize = true, FlatStyle = FlatStyle.Flat, Margin = new Padding(0, 22, 0, 0) };
@@ -119,6 +112,62 @@ public sealed class TrackingReportForm : Form
         card.Controls.Add(_summaryLabel);
         card.Controls.Add(flow);
         return card;
+    }
+
+    private void InitializeFieldFilterCombo(FieldFilterControls filter, bool selectFirstField)
+    {
+        filter.FieldCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        filter.FieldCombo.Width = 180;
+        filter.FieldCombo.Items.Add(NoFieldFilterOption);
+
+        foreach (var field in _optionFields)
+        {
+            filter.FieldCombo.Items.Add(field.Label);
+        }
+
+        filter.FieldCombo.SelectedIndex = selectFirstField && _optionFields.Count > 0 ? 1 : 0;
+        filter.FieldCombo.SelectedIndexChanged += (_, _) => RebuildFilterOptions(filter);
+    }
+
+    // Uses a TableLayoutPanel (instead of stacked rows) so the 3 rows' combo boxes and options buttons
+    // form two perfectly aligned, equidistant columns regardless of whether a row shows a label.
+    private Control BuildFieldFiltersGroup()
+    {
+        var table = new TableLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2,
+            RowCount = _fieldFilters.Count + 1,
+            Margin = new Padding(0, 0, 16, 8)
+        };
+
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
+        var labelFont = new Font("Segoe UI Semibold", 8.5F, FontStyle.Bold);
+        table.Controls.Add(new Label { Text = "Filtrar por campo", AutoSize = true, Font = labelFont, Margin = new Padding(0, 0, 8, 4) }, 0, 0);
+        table.Controls.Add(new Label { Text = "Incluir en el informe", AutoSize = true, Font = labelFont, Margin = new Padding(0, 0, 0, 4) }, 1, 0);
+
+        for (var i = 0; i < _fieldFilters.Count; i++)
+        {
+            var filter = _fieldFilters[i];
+            ConfigureFilterOptionsButton(filter);
+
+            filter.FieldCombo.Margin = new Padding(0, 0, 8, 6);
+            filter.OptionsButton.Margin = new Padding(0, 0, 0, 6);
+
+            table.Controls.Add(filter.FieldCombo, 0, i + 1);
+            table.Controls.Add(filter.OptionsButton, 1, i + 1);
+        }
+
+        return table;
+    }
+
+    private TrackingFieldDefinition? GetSelectedField(FieldFilterControls filter)
+    {
+        var index = filter.FieldCombo.SelectedIndex;
+        return index <= 0 ? null : _optionFields[index - 1];
     }
 
     private Control CreateDateRangeControl()
@@ -165,26 +214,6 @@ public sealed class TrackingReportForm : Form
         dateGroup.Controls.Add(checkRow);
         dateGroup.Controls.Add(pickersRow);
         return dateGroup;
-    }
-
-    private static Control CreateLabeledControl(string label, Control control)
-    {
-        var panel = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.TopDown,
-            AutoSize = true,
-            Margin = new Padding(0, 0, 16, 8)
-        };
-
-        panel.Controls.Add(new Label
-        {
-            Text = label,
-            AutoSize = true,
-            Font = new Font("Segoe UI Semibold", 8.5F, FontStyle.Bold),
-            Margin = new Padding(0, 0, 0, 2)
-        });
-        panel.Controls.Add(control);
-        return panel;
     }
 
     private Control BuildResultsPanel()
@@ -262,83 +291,88 @@ public sealed class TrackingReportForm : Form
         e.Handled = true;
     }
 
-    private Control CreateFilterOptionsControl()
+    private void ConfigureFilterOptionsButton(FieldFilterControls filter)
     {
-        _filterOptionsMenu.ShowCheckMargin = true;
-        _filterOptionsMenu.ShowImageMargin = false;
+        filter.OptionsMenu.ShowCheckMargin = true;
+        filter.OptionsMenu.ShowImageMargin = false;
         // Keep the dropdown open while the user checks/unchecks several options.
-        _filterOptionsMenu.Closing += (_, e) => e.Cancel = e.CloseReason == ToolStripDropDownCloseReason.ItemClicked;
+        filter.OptionsMenu.Closing += (_, e) => e.Cancel = e.CloseReason == ToolStripDropDownCloseReason.ItemClicked;
 
-        _filterOptionsButton.AutoSize = false;
-        _filterOptionsButton.Width = 240;
-        _filterOptionsButton.Height = 28;
-        _filterOptionsButton.TextAlign = ContentAlignment.MiddleLeft;
-        _filterOptionsButton.FlatStyle = FlatStyle.Flat;
-        _filterOptionsButton.FlatAppearance.BorderSize = 1;
-        _filterOptionsButton.Click += (_, _) => _filterOptionsMenu.Show(_filterOptionsButton, new Point(0, _filterOptionsButton.Height));
-
-        return CreateLabeledControl("Incluir en el informe", _filterOptionsButton);
+        filter.OptionsButton.AutoSize = false;
+        filter.OptionsButton.Width = 240;
+        filter.OptionsButton.Height = 28;
+        filter.OptionsButton.TextAlign = ContentAlignment.MiddleLeft;
+        filter.OptionsButton.FlatStyle = FlatStyle.Flat;
+        filter.OptionsButton.FlatAppearance.BorderSize = 1;
+        filter.OptionsButton.Click += (_, _) => filter.OptionsMenu.Show(filter.OptionsButton, new Point(0, filter.OptionsButton.Height));
     }
 
-    private void RebuildFilterOptions()
+    private void RebuildFilterOptions(FieldFilterControls filter)
     {
-        _filterOptionsMenu.Items.Clear();
+        filter.OptionsMenu.Items.Clear();
+        var field = GetSelectedField(filter);
 
-        if (_filterFieldCombo.SelectedIndex < 0)
+        if (field is null)
         {
-            _filterOptionsButton.Text = "Sin campo seleccionado";
-            _filterOptionsButton.Enabled = false;
+            filter.OptionsButton.Text = "Sin filtro";
+            filter.OptionsButton.Enabled = false;
             RefreshResults();
             return;
         }
 
-        _filterOptionsButton.Enabled = true;
-        var filterField = _optionFields[_filterFieldCombo.SelectedIndex];
+        filter.OptionsButton.Enabled = true;
 
         var selectAllItem = new ToolStripMenuItem("Seleccionar todas");
-        selectAllItem.Click += (_, _) => SetAllFilterOptions(true);
+        selectAllItem.Click += (_, _) => SetAllFilterOptions(filter, true);
 
         var selectNoneItem = new ToolStripMenuItem("Deseleccionar todas");
-        selectNoneItem.Click += (_, _) => SetAllFilterOptions(false);
+        selectNoneItem.Click += (_, _) => SetAllFilterOptions(filter, false);
 
-        _filterOptionsMenu.Items.Add(selectAllItem);
-        _filterOptionsMenu.Items.Add(selectNoneItem);
-        _filterOptionsMenu.Items.Add(new ToolStripSeparator());
+        filter.OptionsMenu.Items.Add(selectAllItem);
+        filter.OptionsMenu.Items.Add(selectNoneItem);
+        filter.OptionsMenu.Items.Add(new ToolStripSeparator());
 
-        AddFilterOptionItem(TrackingChartSeriesBuilder.EmptyValueOption, isChecked: true);
+        AddFilterOptionItem(filter, TrackingChartSeriesBuilder.EmptyValueOption, isChecked: true);
 
-        foreach (var option in FieldOptionsHelper.GetOptions(_project, filterField))
+        foreach (var option in FieldOptionsHelper.GetOptions(_project, field))
         {
-            AddFilterOptionItem(option, isChecked: true);
+            AddFilterOptionItem(filter, option, isChecked: true);
         }
 
-        UpdateFilterOptionsSummary();
+        UpdateFilterOptionsSummary(filter);
     }
 
-    private void AddFilterOptionItem(string optionText, bool isChecked)
+    private void AddFilterOptionItem(FieldFilterControls filter, string optionText, bool isChecked)
     {
         var item = new ToolStripMenuItem(optionText) { CheckOnClick = true, Checked = isChecked, Tag = "option" };
-        item.CheckedChanged += (_, _) => UpdateFilterOptionsSummary();
-        _filterOptionsMenu.Items.Add(item);
+        item.CheckedChanged += (_, _) => UpdateFilterOptionsSummary(filter);
+        filter.OptionsMenu.Items.Add(item);
     }
 
-    private void UpdateFilterOptionsSummary()
+    private void UpdateFilterOptionsSummary(FieldFilterControls filter)
     {
-        var optionItems = GetOptionMenuItems();
+        var field = GetSelectedField(filter);
+
+        if (field is null)
+        {
+            RefreshResults();
+            return;
+        }
+
+        var optionItems = GetOptionMenuItems(filter);
         var checkedCount = optionItems.Count(item => item.Checked);
-        var filterField = _optionFields[_filterFieldCombo.SelectedIndex];
-        _filterOptionsButton.Text = $"{filterField.Label}: {checkedCount} de {optionItems.Count} seleccionadas";
+        filter.OptionsButton.Text = $"{field.Label}: {checkedCount} de {optionItems.Count} seleccionadas";
         RefreshResults();
     }
 
-    private List<ToolStripMenuItem> GetOptionMenuItems()
+    private static List<ToolStripMenuItem> GetOptionMenuItems(FieldFilterControls filter)
     {
-        return _filterOptionsMenu.Items.OfType<ToolStripMenuItem>().Where(item => item.Tag as string == "option").ToList();
+        return filter.OptionsMenu.Items.OfType<ToolStripMenuItem>().Where(item => item.Tag as string == "option").ToList();
     }
 
-    private void SetAllFilterOptions(bool isChecked)
+    private static void SetAllFilterOptions(FieldFilterControls filter, bool isChecked)
     {
-        foreach (var item in GetOptionMenuItems())
+        foreach (var item in GetOptionMenuItems(filter))
         {
             item.Checked = isChecked;
         }
@@ -361,26 +395,31 @@ public sealed class TrackingReportForm : Form
     {
         _matchingEntries.Clear();
 
-        if (_optionFields.Count == 0 || _filterFieldCombo.SelectedIndex < 0)
+        if (_optionFields.Count == 0)
         {
             _resultsGrid.Rows.Clear();
             _summaryLabel.Text = "No hay campos de lista configurados en el esquema.";
             return;
         }
 
-        var filterField = _optionFields[_filterFieldCombo.SelectedIndex];
-        var selectedOptionValues = GetOptionMenuItems().Where(item => item.Checked).Select(item => item.Text ?? string.Empty).ToList();
+        var activeFilters = _fieldFilters
+            .Select(filter => (Filter: filter, Field: GetSelectedField(filter)))
+            .Where(pair => pair.Field is not null)
+            .ToList();
 
-        if (selectedOptionValues.Count == 0)
+        foreach (var (filter, field) in activeFilters)
         {
-            _resultsGrid.Rows.Clear();
-            _summaryLabel.Text = "Selecciona al menos una opcion para incluir en el informe.";
-            return;
+            if (GetOptionMenuItems(filter).All(item => !item.Checked))
+            {
+                _resultsGrid.Rows.Clear();
+                _summaryLabel.Text = $"Selecciona al menos una opcion para \"{field!.Label}\".";
+                return;
+            }
         }
 
         var matchingEntries = _project.Entries
             .Where(MatchesDateRangeFilter)
-            .Where(entry => selectedOptionValues.Contains(TrackingChartSeriesBuilder.GetDisplayValue(entry, filterField.Key), StringComparer.OrdinalIgnoreCase))
+            .Where(entry => activeFilters.All(pair => MatchesFieldFilter(entry, pair.Filter, pair.Field!)))
             .OrderByDescending(entry => entry.UpdatedAtLocal)
             .ToList();
 
@@ -389,20 +428,28 @@ public sealed class TrackingReportForm : Form
         _summaryLabel.Text = $"Mostrando {matchingEntries.Count} de {_project.Entries.Count} registros totales";
     }
 
-    // Renders the chart with the same field/options/date-range filters as the results grid, then opens the print/PDF dialog.
+    private static bool MatchesFieldFilter(TrackingEntry entry, FieldFilterControls filter, TrackingFieldDefinition field)
+    {
+        var selectedOptionValues = GetOptionMenuItems(filter).Where(item => item.Checked).Select(item => item.Text ?? string.Empty).ToList();
+        return selectedOptionValues.Contains(TrackingChartSeriesBuilder.GetDisplayValue(entry, field.Key), StringComparer.OrdinalIgnoreCase);
+    }
+
+    // Renders the chart using the row 1 filter field (same as the original single-filter behavior), plus the same date-range/AND filters as the results grid.
     private void CreateReportPdf()
     {
-        if (_filterFieldCombo.SelectedIndex < 0 || _matchingEntries.Count == 0)
+        var primaryFilter = _fieldFilters[0];
+        var primaryField = GetSelectedField(primaryFilter);
+
+        if (primaryField is null || _matchingEntries.Count == 0)
         {
             MessageBox.Show(this, "No hay registros que cumplan los filtros actuales para generar el PDF.", "Crear informe", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        var filterField = _optionFields[_filterFieldCombo.SelectedIndex];
-        var selectedOptionValues = GetOptionMenuItems().Where(item => item.Checked).Select(item => item.Text ?? string.Empty).ToList();
-        var (chartDates, chartSeries) = TrackingChartSeriesBuilder.Build(_matchingEntries, _dateField, filterField, selectedOptionValues);
+        var selectedOptionValues = GetOptionMenuItems(primaryFilter).Where(item => item.Checked).Select(item => item.Text ?? string.Empty).ToList();
+        var (chartDates, chartSeries) = TrackingChartSeriesBuilder.Build(_matchingEntries, _dateField, primaryField, selectedOptionValues);
 
-        using var chartBitmap = RenderChartBitmap($"{filterField.Label}: registros acumulados por dia", chartDates, chartSeries);
+        using var chartBitmap = RenderChartBitmap($"{primaryField.Label}: registros acumulados por dia", chartDates, chartSeries);
 
         var exporter = new TrackingReportPdfExporter();
         exporter.TryExport(this, _project.ProjectName, _schema, _matchingEntries, chartBitmap);
@@ -482,6 +529,22 @@ public sealed class TrackingReportForm : Form
     private void ResetFilters()
     {
         _useDateRangeCheckBox.Checked = false;
-        RebuildFilterOptions();
+
+        foreach (var filter in _fieldFilters)
+        {
+            RebuildFilterOptions(filter);
+        }
+    }
+
+    private const string NoFieldFilterOption = "(Sin filtro)";
+
+    // Holds the field selector + checkbox-options dropdown for one AND filter row.
+    private sealed class FieldFilterControls
+    {
+        public ComboBox FieldCombo { get; } = new();
+
+        public Button OptionsButton { get; } = new();
+
+        public ContextMenuStrip OptionsMenu { get; } = new();
     }
 }

@@ -99,21 +99,10 @@ public sealed class ProjectWorkspaceService
         _preferencesRepository.Save(preferences);
     }
 
-    // Compares the projects currently loaded in the app against the ones found in the candidate folder.
-    public ProjectFolderComparisonResult CompareProjectsFolder(string newFolderPath)
+    // Only switches which folder projects are read from/written to; does not copy, merge, or log anything.
+    public void SetProjectsFolderPath(string newFolderPath)
     {
-        return _projectRepository.CompareWithFolder(newFolderPath);
-    }
-
-    // Merges (keeping the most recent version of each project) and switches to the new folder.
-    public void ApplyProjectsFolderChange(ProjectFolderComparisonResult comparison)
-    {
-        _projectRepository.ApplyFolderChange(comparison.NewFolderPath, comparison.ProjectsToKeep);
-    }
-
-    public void LogFolderChangeDecision(ProjectFolderComparisonResult comparison, bool accepted)
-    {
-        _projectRepository.WriteFolderChangeLog(comparison, accepted);
+        _projectRepository.SetProjectsFolderPath(newFolderPath);
     }
 
     // Writes a timestamped copy of the given project to the backup folder; called when the app is closing.

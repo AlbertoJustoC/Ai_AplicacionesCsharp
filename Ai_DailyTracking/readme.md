@@ -1,24 +1,34 @@
 # Ai_DailyTracking
 
-Aplicacion WinForms para seguimiento diario de tareas e inputs de proyectos con enfoque practico para equipos de ingenieria.
+Aplicacion de escritorio (WinForms, .NET 8) para el seguimiento diario de tareas/incidencias de proyectos de ingenieria: cada entrada del dia se registra en una ficha con campos configurables, y queda disponible en un historico filtrable, con graficos e informes en PDF.
 
-## Lo que hace hoy
-- Abre automaticamente el ultimo proyecto usado.
-- Si no existe un proyecto previo, solicita crear uno nuevo al iniciar.
-- Guarda cada cambio al instante en un archivo JSON externo por proyecto.
-- Mantiene un historico de registros del proyecto.
-- Genera el formulario desde un esquema configurable con campos de texto, listas cerradas y fechas.
+## Enfoque
+- Una persona (o un equipo, si se comparte la carpeta de proyectos) lleva un "diario" por proyecto: cada entrada es un evento/tarea del dia con disciplina, area, paquete, estado, actividad, notas, etc.
+- Los campos del formulario NO estan escritos a fuego en el codigo: se generan a partir de un esquema (`tracking-schema.json`) editable, por lo que se pueden anadir/quitar campos (listas cerradas, texto largo, fechas...) sin recompilar.
+- Todo se guarda automaticamente (autoguardado) en archivos JSON, uno por proyecto, para poder abrir/cerrar la app sin perder cambios ni tener que pulsar "Guardar".
 
-## Persistencia
-- Proyectos: `%AppData%\AiDailyTracking\Projects\<nombre-proyecto>-<id>.json`
-- Preferencias: `%AppData%\AiDailyTracking\app-preferences.json`
+## Que hace hoy
+- Abre automaticamente el ultimo proyecto usado; si no existe ninguno, pide crear uno nuevo.
+- Formulario de ficha diaria generado desde el esquema (texto, listas, fechas, texto largo con tamano ajustable).
+- Historico de entradas con columnas ID/Fecha/Disciplina/Area/Paquete/Estado, ordenable.
+- Gestion de proyectos: crear, eliminar, elegir "carpeta de proyectos" compartida (para que varias personas lean/escriban desde la misma ruta de red) y ver/editar los usuarios del proyecto.
+- "Crear Informe": ventana con hasta 3 filtros por campo combinables (AND), filtro por rango de fechas, grafico de barras y exportacion a PDF (tamano A3).
+- Grafico dedicado (`TrackingChartForm`) de entradas acumuladas por dia, agrupado por el campo que se elija.
+- Exportacion de una ficha concreta a Markdown y vinculo opcional a una "Carpeta Documentacion" por entrada.
+- Copia de seguridad automatica del proyecto activo al cerrar la aplicacion.
+
+## Persistencia (todo en `%AppData%`, no requiere instalador)
+- Proyectos: `%AppData%\AiDailyTracking\Projects\<nombre-proyecto>-<id>.json` (o la carpeta compartida que se elija con "Carpeta de proyectos").
+- Copias de seguridad: `%AppData%\AiDailyTracking\backup\`
+- Preferencias de la app: `%AppData%\AiDailyTracking\app-preferences.json`
 - Esquema del formulario: `%AppData%\AiDailyTracking\tracking-schema.json`
 
-## Ejecucion
+## Compilar y ejecutar
 ```powershell
-dotnet build
+dotnet build -c Release
 dotnet run
 ```
 
-## Nota sobre la pestaña Tracking del Excel
-El formulario queda preparado para adaptarse a la estructura exacta de la hoja `Tracking` editando `tracking-schema.json`. En este cambio se deja un esquema inicial razonable porque el archivo Excel adjunto no estuvo accesible fisicamente desde el entorno de ejecucion.
+Para la guia completa de que copiar en un equipo nuevo, donde instalarlo y como usar la app paso a paso, ver [MANUAL_USUARIO.md](MANUAL_USUARIO.md).
+
+Documentacion tecnica ampliada (arquitectura, UI, servicios, convenciones): [docs/README.md](docs/README.md).

@@ -371,7 +371,9 @@ public sealed class DailyTrackingForm : Form
         _entriesListView.OwnerDraw = true;
         _entriesListView.Columns.Add("ID", 50);
         _entriesListView.Columns.Add("Fecha", 95);
-        _entriesListView.Columns.Add("Actividad", 170);
+        _entriesListView.Columns.Add("Disciplina", 110);
+        _entriesListView.Columns.Add("Area", 110);
+        _entriesListView.Columns.Add("Paquete", 110);
         _entriesListView.Columns.Add("Estado", 100);
         _entriesListView.SelectedIndexChanged += EntriesListView_SelectedIndexChanged;
         _entriesListView.Resize += EntriesListView_Resize;
@@ -522,7 +524,6 @@ public sealed class DailyTrackingForm : Form
         };
 
         var editor = CreateEditorControl(field);
-        editor.Dock = DockStyle.Bottom;
         editor.Tag = field.Key;
 
         if (IsUpdatedDateField(field))
@@ -530,10 +531,70 @@ public sealed class DailyTrackingForm : Form
             card.Controls.Add(CreateUpdatedDateAutoToggle());
         }
 
-        card.Controls.Add(editor);
+        if (field.Type == TrackingFieldType.LongText)
+        {
+            // Fill-docked controls must be added before their Top/Bottom siblings, otherwise the
+            // fill control claims the whole card and hides the label/grip behind it.
+            editor.Dock = DockStyle.Fill;
+            card.Controls.Add(editor);
+            card.Controls.Add(CreateFieldCardResizeGrip(card, GetFieldCardHeight(field)));
+        }
+        else
+        {
+            editor.Dock = DockStyle.Bottom;
+            card.Controls.Add(editor);
+        }
+
         card.Controls.Add(label);
         _fieldControls[field.Key] = editor;
         return card;
+    }
+
+    private Control CreateFieldCardResizeGrip(Panel card, int minimumHeight)
+    {
+        var grip = new Panel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 6,
+            Cursor = Cursors.SizeNS,
+            BackColor = Color.FromArgb(221, 226, 230)
+        };
+        _toolTip.SetToolTip(grip, "Arrastra hacia abajo para agrandar el campo");
+
+        var dragging = false;
+        var dragStartScreenY = 0;
+        var dragStartRowHeight = 0;
+
+        grip.MouseDown += (s, e) =>
+        {
+            if (e.Button != MouseButtons.Left)
+            {
+                return;
+            }
+
+            dragging = true;
+            dragStartScreenY = Cursor.Position.Y;
+            dragStartRowHeight = card.Height;
+        };
+
+        grip.MouseMove += (s, e) =>
+        {
+            if (!dragging || card.Parent is not TableLayoutPanel layout)
+            {
+                return;
+            }
+
+            var rowIndex = layout.GetRow(card);
+            var delta = Cursor.Position.Y - dragStartScreenY;
+            var newHeight = Math.Max(minimumHeight, dragStartRowHeight + delta);
+            layout.RowStyles[rowIndex].SizeType = SizeType.Absolute;
+            layout.RowStyles[rowIndex].Height = newHeight;
+            layout.PerformLayout();
+        };
+
+        grip.MouseUp += (s, e) => dragging = false;
+
+        return grip;
     }
 
     private static int GetFieldCardHeight(TrackingFieldDefinition field)
@@ -703,7 +764,7 @@ public sealed class DailyTrackingForm : Form
         _inputReceivedPathLabel.Resize += InputReceivedPathLabel_Resize;
         _inputReceivedPathLabel.MouseUp += InputReceivedPathLabel_MouseUp;
 
-        ConfigureActionButtonWithFixedWidth(_inputReceivedButton, "input recibido", Color.FromArgb(18, 103, 177), 156);
+        ConfigureActionButtonWithFixedWidth(_inputReceivedButton, "Carpeta Documentación", Color.FromArgb(18, 103, 177), 156);
         _inputReceivedButton.Click += InputReceivedButton_Click;
 
         panel.Controls.Add(_inputReceivedButton, 0, 0);
@@ -906,7 +967,7 @@ public sealed class DailyTrackingForm : Form
 
         using var dialog = new FolderBrowserDialog
         {
-            Description = "Selecciona la carpeta de input recibido",
+            Description = "Selecciona la carpeta de documentación",
             UseDescriptionForTitle = true,
             SelectedPath = initialPath ?? string.Empty
         };
@@ -963,7 +1024,7 @@ public sealed class DailyTrackingForm : Form
             return;
         }
 
-        ShowClearPathMenu(_inputReceivedPathLabel, e.Location, "Quitar ruta de input recibido", () =>
+        ShowClearPathMenu(_inputReceivedPathLabel, e.Location, "Quitar ruta de carpeta de documentación", () =>
         {
             UpdateInputReceivedPathDisplay(null);
             PersistCurrentEntry();
@@ -1303,7 +1364,7 @@ public sealed class DailyTrackingForm : Form
 
         _inputReceivedPathLabel.Tag = selectedPath;
         _inputReceivedPathLabel.Text = selectedPath is null
-            ? "Sin ruta de input recibido"
+            ? "Sin ruta de carpeta de documentación"
             : selectedPath;
         _inputReceivedPathLabel.ForeColor = selectedPath is null ? Color.FromArgb(132, 140, 152) : Color.FromArgb(22, 58, 92);
         _inputReceivedPathLabel.Cursor = pathExists ? Cursors.Hand : Cursors.Default;
@@ -1311,7 +1372,7 @@ public sealed class DailyTrackingForm : Form
         _toolTip.SetToolTip(
             _inputReceivedPathLabel,
             selectedPath is null
-                ? "Seleccion opcional: carpeta de input recibido. Clic derecho para limpiar."
+                ? "Seleccion opcional: carpeta de documentación. Clic derecho para limpiar."
                 : $"{selectedPath}\n(Clic para abrir en el explorador de archivos, clic derecho para limpiar)");
     }
 
@@ -1995,7 +2056,9 @@ public sealed class DailyTrackingForm : Form
                 Tag = entry.EntryId
             };
             listItem.SubItems.Add(GetEntryDate(entry));
-            listItem.SubItems.Add(GetEntryHeadline(entry));
+            listItem.SubItems.Add(GetFieldValue(entry, "discipline") ?? "-");
+            listItem.SubItems.Add(GetFieldValue(entry, "area") ?? "-");
+            listItem.SubItems.Add(GetFieldValue(entry, "package") ?? "-");
             listItem.SubItems.Add(GetFieldValue(entry, "status") ?? "-");
             _entriesListView.Items.Add(listItem);
         }
@@ -2025,8 +2088,10 @@ public sealed class DailyTrackingForm : Form
         {
             0 => descending ? entries.OrderByDescending(entry => entry.EntryNumber) : entries.OrderBy(entry => entry.EntryNumber),
             1 => descending ? entries.OrderByDescending(GetSortableDate) : entries.OrderBy(GetSortableDate),
-            2 => descending ? entries.OrderByDescending(GetEntryHeadline) : entries.OrderBy(GetEntryHeadline),
-            3 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "status") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "status") ?? string.Empty),
+            2 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "discipline") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "discipline") ?? string.Empty),
+            3 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "area") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "area") ?? string.Empty),
+            4 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "package") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "package") ?? string.Empty),
+            5 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "status") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "status") ?? string.Empty),
             _ => entries.OrderByDescending(entry => entry.UpdatedAtLocal)
         };
     }
@@ -2067,13 +2132,6 @@ public sealed class DailyTrackingForm : Form
         }
 
         return entry.UpdatedAtLocal.ToString("dd/MM/yyyy");
-    }
-
-    private string GetEntryHeadline(TrackingEntry entry)
-    {
-        return GetFieldValue(entry, "activity", "descripcion", "title")
-            ?? GetFieldValue(entry, "area", "package")
-            ?? "Registro sin titulo";
     }
 
     private static string? GetFieldValue(TrackingEntry entry, params string[] keys)
@@ -2389,37 +2447,7 @@ public sealed class DailyTrackingForm : Form
             return;
         }
 
-        var comparison = _workspaceService.CompareProjectsFolder(dialog.SelectedPath);
-
-        // Only projects that exist on both sides with different content require a user decision;
-        // projects that only exist on one side are merged automatically without prompting.
-        foreach (var conflict in comparison.Conflicts)
-        {
-            using var conflictDialog = new ProjectVersionConflictDialog(
-                conflict.AppVersion.ProjectName,
-                conflict.AppVersion.UpdatedAtLocal,
-                conflict.FolderVersion.UpdatedAtLocal);
-
-            conflictDialog.ShowDialog(this);
-
-            switch (conflictDialog.Choice)
-            {
-                case ProjectVersionConflictDialog.ConflictChoice.UseAppVersion:
-                    comparison.ProjectsToKeep.Add(conflict.AppVersion);
-                    break;
-
-                case ProjectVersionConflictDialog.ConflictChoice.UseFolderVersion:
-                    comparison.ProjectsToKeep.Add(conflict.FolderVersion);
-                    break;
-
-                default:
-                    _workspaceService.LogFolderChangeDecision(comparison, accepted: false);
-                    return;
-            }
-        }
-
-        _workspaceService.ApplyProjectsFolderChange(comparison);
-        _workspaceService.LogFolderChangeDecision(comparison, accepted: true);
+        _workspaceService.SetProjectsFolderPath(dialog.SelectedPath);
         UpdateProjectsFolderDisplay();
 
         var previousProjectId = _currentProject?.ProjectId;
@@ -2480,7 +2508,7 @@ public sealed class DailyTrackingForm : Form
 
     private void EntriesListView_Resize(object? sender, EventArgs e)
     {
-        if (_entriesListView.Columns.Count != 4)
+        if (_entriesListView.Columns.Count != 6)
         {
             return;
         }
@@ -2488,8 +2516,13 @@ public sealed class DailyTrackingForm : Form
         var availableWidth = Math.Max(_entriesListView.ClientSize.Width - 8, 260);
         _entriesListView.Columns[0].Width = 50;
         _entriesListView.Columns[1].Width = 95;
-        _entriesListView.Columns[3].Width = 100;
-        _entriesListView.Columns[2].Width = Math.Max(availableWidth - 245, 120);
+        _entriesListView.Columns[5].Width = 100;
+
+        var remainingWidth = Math.Max(availableWidth - 245, 300);
+        var columnWidth = Math.Max(remainingWidth / 3, 100);
+        _entriesListView.Columns[2].Width = columnWidth;
+        _entriesListView.Columns[3].Width = columnWidth;
+        _entriesListView.Columns[4].Width = remainingWidth - (columnWidth * 2);
     }
 
     private void EntriesListView_ColumnClick(object? sender, ColumnClickEventArgs e)
@@ -2515,7 +2548,7 @@ public sealed class DailyTrackingForm : Form
 
     private void EntriesListView_DrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
     {
-        const int statusColumnIndex = 3;
+        const int statusColumnIndex = 5;
 
         if (e.ColumnIndex != statusColumnIndex || _statusFieldDefinition is null || e.Item is null || e.SubItem is null)
         {
