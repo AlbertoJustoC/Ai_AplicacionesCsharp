@@ -2,8 +2,11 @@ using Ai_DailyTracking.Application.Services;
 using Ai_DailyTracking.Domain.Models;
 using Ai_DailyTracking.Infrastructure;
 using Ai_DailyTracking.Shared.Helpers;
+using Ai_DailyTracking.UI.Controls;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Ai_DailyTracking.UI.Forms;
 
@@ -13,18 +16,53 @@ public sealed class DailyTrackingForm : Form
     private const string MarkdownFilePathKey = "markdownFilePath";
     private const string NotesFieldKey = "notes";
     private const string StatusFieldKey = "status";
+    private const string PriorityFieldKey = "priority";
     private const string UpdatedDateFieldKey = "updatedDate";
     private const string UpdatedDateAutoKey = "updatedDateAuto";
+    private static readonly IReadOnlyDictionary<string, int> StatusRanks = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Nuevo"] = 1,
+        ["En curso"] = 2,
+        ["En revisión"] = 3,
+        ["Hecho"] = 4,
+        ["Cerrado"] = 5
+    };
+    private static readonly IReadOnlyDictionary<string, string> PriorityIndicators = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Baja"] = "↓",
+        ["Media"] = "—",
+        ["Alta"] = "↑",
+        ["Critica"] = "!",
+        ["Crítica"] = "!"
+    };
+    private static readonly IReadOnlyDictionary<string, int> PriorityRanks = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Baja"] = 1,
+        ["Media"] = 2,
+        ["Alta"] = 3,
+        ["Critica"] = 4,
+        ["Crítica"] = 4
+    };
+    private static readonly Regex NoteTimestampRegex = new(
+        @"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex NoteStatusRegex = new(
+        @"\*\*(?<status>[^*\r\n]+)\*\*",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private readonly ProjectWorkspaceService _workspaceService;
     private readonly TrackingEntryMarkdownExporter _markdownExporter;
+    private readonly SharedPathService _sharedPathService;
     private readonly TrackingFormSchema _schema;
     private readonly Dictionary<string, Control> _fieldControls = new(StringComparer.OrdinalIgnoreCase);
     private readonly ComboBox _projectSelector = new();
+    private readonly FlowLayoutPanel _projectSelectorRow = new();
+    private readonly Button _retryProjectButton = new();
     private readonly Button _newProjectButton = new();
     private readonly Button _deleteProjectButton = new();
     private readonly Button _manageProjectUsersButton = new();
     private readonly Button _newEntryButton = new();
+    private readonly Button _saveEntryButton = new();
     private readonly Button _deleteEntryButton = new();
     private readonly Button _viewChartButton = new();
     private readonly Button _createReportButton = new();
@@ -40,40 +78,60 @@ public sealed class DailyTrackingForm : Form
     private readonly Button _updateMarkdownButton = new();
     private readonly CheckBox _updatedDateAutoCheckBox = new();
     private readonly ListView _entriesListView = new();
-    private readonly ComboBox _statusFilterCombo = new();
+    private readonly ImageList _entriesListImageList = new();
+    private readonly MultiSelectFilterDropDown _statusFilterDropDown;
+    private readonly MultiSelectFilterDropDown _priorityFilterDropDown;
+    private readonly MultiSelectFilterDropDown _assignedToFilterDropDown;
     private readonly TableLayoutPanel _editorLayout = new();
     private readonly ToolTip _toolTip = new();
+    private readonly System.Windows.Forms.Timer _presenceTimer = new() { Interval = 60_000 };
+    private readonly HashSet<Guid> _announcedEditorSessions = [];
     private readonly TrackingFieldDefinition? _statusFieldDefinition;
+    private readonly TrackingFieldDefinition? _priorityFieldDefinition;
 
     private bool _suppressEvents;
     private bool _suppressUpdatedDateAutoChanged;
     private bool _hasUnsavedChanges;
+    private bool _pendingLongTextChanges;
+    private int _pendingConflictCount;
     private TrackingProject? _currentProject;
     private TrackingEntry? _currentEntry;
-    private string? _statusFilterValue;
-    private int _sortColumnIndex = 0;
+    private int _sortColumnIndex = 2;
     private SortOrder _sortOrder = SortOrder.Ascending;
 
-    public DailyTrackingForm(ProjectWorkspaceService workspaceService, TrackingEntryMarkdownExporter markdownExporter)
+    public DailyTrackingForm(ProjectWorkspaceService workspaceService, TrackingEntryMarkdownExporter markdownExporter, SharedPathService sharedPathService)
     {
         _workspaceService = workspaceService;
         _markdownExporter = markdownExporter;
+        _sharedPathService = sharedPathService;
         _schema = _workspaceService.LoadSchema();
         _statusFieldDefinition = _schema.Fields.FirstOrDefault(field => string.Equals(field.Key, "status", StringComparison.OrdinalIgnoreCase));
+        _priorityFieldDefinition = _schema.Fields.FirstOrDefault(field => string.Equals(field.Key, "priority", StringComparison.OrdinalIgnoreCase));
+        _statusFilterDropDown = new MultiSelectFilterDropDown("Estado", BuildOptionColorResolver(_statusFieldDefinition));
+        _priorityFilterDropDown = new MultiSelectFilterDropDown("Prioridad", BuildOptionColorResolver(_priorityFieldDefinition));
+        _assignedToFilterDropDown = new MultiSelectFilterDropDown("Asignado a");
 
         Text = "Seguimiento diario de proyectos";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(1360, 700);
-        Size = new Size(1360, 900);
+        MinimumSize = new Size(1500, 700);
+        Size = new Size(1500, 900);
         BackColor = Color.FromArgb(236, 240, 244);
         Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Point);
         ApplyExecutableIcon();
 
         BuildLayout();
         BuildDynamicEditor();
+        UpdateAutosaveLabel();
 
         Load += DailyTrackingForm_Load;
         FormClosing += DailyTrackingForm_FormClosing;
+        _presenceTimer.Tick += (_, _) =>
+        {
+            if (_currentProject is null) return;
+            _workspaceService.RefreshPresence();
+            ShowOtherEditorsNotice();
+        };
+        _presenceTimer.Start();
     }
 
     private void BuildLayout()
@@ -85,7 +143,7 @@ public sealed class DailyTrackingForm : Form
             RowCount = 3,
             BackColor = BackColor
         };
-        rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 130F));
+        rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 160F));
         rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 76F));
         rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
@@ -116,9 +174,9 @@ public sealed class DailyTrackingForm : Form
 
         _projectsFolderPathLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _projectsFolderPathLabel.Top = _chooseProjectsFolderButton.Top + _chooseProjectsFolderButton.Height + 2;
-        _projectsFolderPathLabel.Height = 36;
-        _projectsFolderPathLabel.TextAlign = ContentAlignment.MiddleRight;
-        _projectsFolderPathLabel.AutoEllipsis = true;
+        _projectsFolderPathLabel.Height = 76;
+        _projectsFolderPathLabel.TextAlign = ContentAlignment.TopRight;
+        _projectsFolderPathLabel.AutoEllipsis = false;
         _projectsFolderPathLabel.Font = new Font("Segoe UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point);
         _projectsFolderPathLabel.ForeColor = Color.FromArgb(190, 202, 214);
         _projectsFolderPathLabel.Cursor = Cursors.Hand;
@@ -126,8 +184,6 @@ public sealed class DailyTrackingForm : Form
 
         _folderButtonPanel.Controls.Add(_chooseProjectsFolderButton);
         _folderButtonPanel.Controls.Add(_projectsFolderPathLabel);
-
-        UpdateProjectsFolderDisplay();
 
         var titleLabel = new Label
         {
@@ -138,48 +194,50 @@ public sealed class DailyTrackingForm : Form
             ForeColor = Color.White
         };
 
-        var projectSelectorRow = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-              Margin = new Padding(0, 12, 0, 0),
-              Padding = new Padding(0, 5, 0, 0)
-        };
+        _projectSelectorRow.Dock = DockStyle.Top;
+        _projectSelectorRow.AutoSize = true;
+        _projectSelectorRow.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _projectSelectorRow.FlowDirection = FlowDirection.LeftToRight;
+        _projectSelectorRow.WrapContents = false;
+        _projectSelectorRow.Margin = new Padding(0, 12, 0, 0);
+        _projectSelectorRow.Padding = new Padding(0, 5, 0, 0);
 
         _projectSelector.Width = 260;
         _projectSelector.Height = 30;
-        _projectSelector.Margin = new Padding(0, 12, 16, 0);
+        _projectSelector.Margin = new Padding(0, 17, 16, 0);
         _projectSelector.DropDownStyle = ComboBoxStyle.DropDownList;
         _projectSelector.SelectedIndexChanged += ProjectSelector_SelectedIndexChanged;
 
-        ConfigureActionButton(_manageProjectUsersButton, "Usuarios del proyecto", Color.FromArgb(96, 100, 112), larger: true);
+        ConfigureActionButton(_retryProjectButton, "Fusionar", Color.FromArgb(18, 103, 177), larger: true);
+        _retryProjectButton.Margin = new Padding(0, 10, 8, 0);
+        _retryProjectButton.Click += RefreshCurrentProjectButton_Click;
+
+        ConfigureHeaderProjectButton(_manageProjectUsersButton, "Usuarios del\r\nproyecto", Color.FromArgb(96, 100, 112), 148);
         _manageProjectUsersButton.Margin = new Padding(0, 10, 8, 0);
         _manageProjectUsersButton.Click += ManageProjectUsersButton_Click;
 
-        ConfigureActionButton(_newProjectButton, "Nuevo proyecto", Color.FromArgb(18, 103, 177), larger: true);
+        ConfigureHeaderProjectButton(_newProjectButton, "Nuevo\r\nproyecto", Color.FromArgb(18, 103, 177), 128);
         _newProjectButton.Margin = new Padding(0, 10, 8, 0);
         _newProjectButton.Click += NewProjectButton_Click;
 
-        ConfigureActionButton(_deleteProjectButton, "Eliminar proyecto", Color.FromArgb(178, 34, 52), larger: true);
-        _deleteProjectButton.TextAlign = ContentAlignment.MiddleCenter;
-        _deleteProjectButton.AutoSize = false;
-        _deleteProjectButton.Width = 145;
+        ConfigureHeaderProjectButton(_deleteProjectButton, "Eliminar\r\nproyecto", Color.FromArgb(178, 34, 52), 148);
         _deleteProjectButton.Margin = new Padding(0, 10, 8, 0);
         _deleteProjectButton.Click += DeleteProjectButton_Click;
 
-        projectSelectorRow.Controls.Add(_projectSelector);
-        projectSelectorRow.Controls.Add(_manageProjectUsersButton);
-        projectSelectorRow.Controls.Add(_newProjectButton);
-        projectSelectorRow.Controls.Add(_deleteProjectButton);
+        _projectSelectorRow.Controls.Add(_projectSelector);
+        _projectSelectorRow.Controls.Add(_retryProjectButton);
+        _projectSelectorRow.Controls.Add(_manageProjectUsersButton);
+        _projectSelectorRow.Controls.Add(_newProjectButton);
+        _projectSelectorRow.Controls.Add(_deleteProjectButton);
 
         var textPanel = new Panel { Dock = DockStyle.Fill };
-        textPanel.Controls.Add(projectSelectorRow);
+        textPanel.Controls.Add(_projectSelectorRow);
         textPanel.Controls.Add(titleLabel);
 
         panel.Controls.Add(textPanel);
         panel.Controls.Add(_folderButtonPanel);
+        panel.Resize += (_, _) => UpdateProjectsFolderDisplay();
+        UpdateProjectsFolderDisplay();
         return panel;
     }
 
@@ -206,6 +264,9 @@ public sealed class DailyTrackingForm : Form
         ConfigureActionButton(_newEntryButton, "Nuevo registro", Color.FromArgb(232, 144, 34));
         _newEntryButton.Click += NewEntryButton_Click;
 
+        ConfigureActionButton(_saveEntryButton, "Guardar registro", Color.FromArgb(96, 100, 112));
+        _saveEntryButton.Click += (_, _) => SaveCurrentProject();
+
         ConfigureActionButton(_deleteEntryButton, "Eliminar registro", Color.FromArgb(178, 34, 52));
         _deleteEntryButton.Click += DeleteEntryButton_Click;
 
@@ -216,6 +277,7 @@ public sealed class DailyTrackingForm : Form
         _createReportButton.Click += CreateReportButton_Click;
 
         buttonsFlow.Controls.Add(_newEntryButton);
+        buttonsFlow.Controls.Add(_saveEntryButton);
         buttonsFlow.Controls.Add(_deleteEntryButton);
         buttonsFlow.Controls.Add(_viewChartButton);
         buttonsFlow.Controls.Add(_createReportButton);
@@ -281,12 +343,12 @@ public sealed class DailyTrackingForm : Form
             Width = 8,
             BackColor = Color.FromArgb(210, 216, 222),
             MinSize = 280,
-            MinExtra = 480
+            MinExtra = 620
         };
 
         var entriesPanel = CreateEntriesPanel();
         entriesPanel.Dock = DockStyle.Left;
-        entriesPanel.Width = 480;
+        entriesPanel.Width = 620;
 
         // Add order matters for Dock layout: Fill first, then the Left-docked controls, outermost added last.
         container.Controls.Add(editorPanel);
@@ -317,37 +379,24 @@ public sealed class DailyTrackingForm : Form
             Margin = new Padding(0, 0, 0, 8)
         };
 
-        var filterLabel = new Label
-        {
-            Text = "Filtrar por estado:",
-            AutoSize = true,
-            Anchor = AnchorStyles.Left,
-            Padding = new Padding(0, 7, 6, 0)
-        };
-
-        _statusFilterCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _statusFilterCombo.Width = 170;
-        _statusFilterCombo.Items.Add("(Todos)");
-
         if (_statusFieldDefinition is not null)
         {
-            foreach (var option in _statusFieldDefinition.Options)
-            {
-                _statusFilterCombo.Items.Add(option);
-            }
-
-            if (_statusFieldDefinition.OptionColors is { Count: > 0 })
-            {
-                _statusFilterCombo.DrawMode = DrawMode.OwnerDrawFixed;
-                _statusFilterCombo.DrawItem += (s, e) => DrawColorCodedComboItem(_statusFieldDefinition, _statusFilterCombo, e);
-            }
+            _statusFilterDropDown.SetOptions(_statusFieldDefinition.Options);
         }
 
-        _statusFilterCombo.SelectedIndex = 0;
-        _statusFilterCombo.SelectedIndexChanged += StatusFilterCombo_SelectedIndexChanged;
+        _statusFilterDropDown.SelectionChanged += (s, e) => RefreshEntriesList();
 
-        filterRow.Controls.Add(filterLabel);
-        filterRow.Controls.Add(_statusFilterCombo);
+        if (_priorityFieldDefinition is not null)
+        {
+            _priorityFilterDropDown.SetOptions(_priorityFieldDefinition.Options);
+        }
+
+        _priorityFilterDropDown.SelectionChanged += (s, e) => RefreshEntriesList();
+        _assignedToFilterDropDown.SelectionChanged += (s, e) => RefreshEntriesList();
+
+        filterRow.Controls.Add(CreateFilterGroup("Estado", _statusFilterDropDown));
+        filterRow.Controls.Add(CreateFilterGroup("Prioridad", _priorityFilterDropDown));
+        filterRow.Controls.Add(CreateFilterGroup("Asignado a", _assignedToFilterDropDown));
 
         var headerPanel = new TableLayoutPanel
         {
@@ -368,23 +417,51 @@ public sealed class DailyTrackingForm : Form
         _entriesListView.HideSelection = false;
         _entriesListView.MultiSelect = false;
         _entriesListView.BorderStyle = BorderStyle.None;
+        _entriesListImageList.ImageSize = new Size(1, 30);
+        _entriesListView.SmallImageList = _entriesListImageList;
         _entriesListView.OwnerDraw = true;
+        _entriesListView.Columns.Add(string.Empty, 36).TextAlign = HorizontalAlignment.Center;
+        _entriesListView.Columns.Add(string.Empty, 30).TextAlign = HorizontalAlignment.Center;
         _entriesListView.Columns.Add("ID", 50);
         _entriesListView.Columns.Add("Fecha", 95);
-        _entriesListView.Columns.Add("Disciplina", 110);
-        _entriesListView.Columns.Add("Area", 110);
-        _entriesListView.Columns.Add("Paquete", 110);
-        _entriesListView.Columns.Add("Estado", 100);
+        _entriesListView.Columns.Add("Disciplina", 130);
+        _entriesListView.Columns.Add("Area", 130);
+        _entriesListView.Columns.Add("Paquete", 130);
         _entriesListView.SelectedIndexChanged += EntriesListView_SelectedIndexChanged;
         _entriesListView.Resize += EntriesListView_Resize;
         _entriesListView.ColumnClick += EntriesListView_ColumnClick;
-        _entriesListView.DrawColumnHeader += (s, e) => e.DrawDefault = true;
-        _entriesListView.DrawItem += (s, e) => e.DrawDefault = true;
+        _entriesListView.DrawColumnHeader += EntriesListView_DrawColumnHeader;
+        _entriesListView.DrawItem += EntriesListView_DrawItem;
         _entriesListView.DrawSubItem += EntriesListView_DrawSubItem;
 
         card.Controls.Add(_entriesListView);
         card.Controls.Add(headerPanel);
         return card;
+    }
+
+    private static Control CreateFilterGroup(string title, Control filter)
+    {
+        var group = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Margin = new Padding(0, 0, 12, 0)
+        };
+        group.Controls.Add(new Label { Text = title, AutoSize = true, Margin = new Padding(0, 0, 0, 2) });
+        filter.Margin = Padding.Empty;
+        group.Controls.Add(filter);
+        return group;
+    }
+
+    private static void ConfigureHeaderProjectButton(Button button, string text, Color backColor, int width)
+    {
+        ConfigureActionButton(button, text, backColor);
+        button.AutoSize = false;
+        button.Size = new Size(width, 48);
+        button.Padding = new Padding(8, 2, 8, 2);
+        button.UseCompatibleTextRendering = true;
+        button.TextAlign = ContentAlignment.MiddleCenter;
     }
 
     private Control CreateEditorPanel()
@@ -686,22 +763,47 @@ public sealed class DailyTrackingForm : Form
                 return editableCombo;
 
             case TrackingFieldType.LongText:
+                if (IsCommentsField(field))
+                {
+                    var notesTextBox = new RichTextBox
+                    {
+                        Multiline = true,
+                        ScrollBars = RichTextBoxScrollBars.Vertical,
+                        Height = 66,
+                        DetectUrls = false,
+                        // Notes used to be one point smaller than the control default.
+                        // Keeping the default size makes them exactly one point larger.
+                        Font = new Font(Control.DefaultFont.FontFamily, Control.DefaultFont.Size, FontStyle.Regular, GraphicsUnit.Point)
+                    };
+                    notesTextBox.KeyDown += CommentsTextBox_KeyDown;
+                    notesTextBox.KeyPress += CommentsTextBox_KeyPress;
+                    // Colors are recalculated only when the field loses focus, not on every keystroke.
+                    notesTextBox.Leave += (s, e) =>
+                    {
+                        ApplyNotesFormatting(notesTextBox);
+                        CommitPendingLongTextChanges();
+                    };
+                    notesTextBox.TextChanged += LongTextValueChanged;
+                    return notesTextBox;
+                }
+
                 var longTextBox = new TextBox
                 {
                     Multiline = true,
                     ScrollBars = ScrollBars.Vertical,
-                    Height = IsCommentsField(field) ? 66 : 44,
+                    Height = 44,
                     PlaceholderText = field.Placeholder ?? string.Empty
                 };
 
-                if (IsCommentsField(field))
+                if (IsActivityField(field))
                 {
-                    longTextBox.Font = new Font(longTextBox.Font.FontFamily, Math.Max(6F, longTextBox.Font.Size - 1F), longTextBox.Font.Style, GraphicsUnit.Point);
-                    longTextBox.KeyDown += CommentsTextBox_KeyDown;
-                    longTextBox.KeyPress += CommentsTextBox_KeyPress;
+                    longTextBox.TextChanged += LongTextValueChanged;
+                    longTextBox.Leave += (s, e) => CommitPendingLongTextChanges();
                 }
-
-                longTextBox.TextChanged += FieldValueChanged;
+                else
+                {
+                    longTextBox.TextChanged += FieldValueChanged;
+                }
                 return longTextBox;
 
             default:
@@ -948,6 +1050,11 @@ public sealed class DailyTrackingForm : Form
             return false;
         }
 
+        if (!TryShowFolderNameSuggestion("Nombre sugerido de carpeta", "Indica un prefijo opcional. Copia la propuesta para pegarla al crear una carpeta nueva.", extension: null, out _))
+        {
+            return false;
+        }
+
         var selectedPath = ShowInputReceivedFolderDialog();
 
         if (selectedPath is null)
@@ -955,8 +1062,55 @@ public sealed class DailyTrackingForm : Form
             return false;
         }
 
+        if (!EnsureSharePointRootForPath(selectedPath))
+        {
+            return false;
+        }
+
+        if (_currentProject is not null)
+        {
+            _currentProject.LastEntryFolderPath = _sharedPathService.ToStoredPath(selectedPath, directory: true);
+        }
+
         UpdateInputReceivedPathDisplay(selectedPath);
         PersistCurrentEntry();
+        return true;
+    }
+
+    private bool TryShowFolderNameSuggestion(string title, string helpText, string? extension, out string proposedName)
+    {
+        proposedName = string.Empty;
+
+        if (_currentEntry is null || _currentProject is null)
+        {
+            return false;
+        }
+
+        var area = GetFieldValue(_currentEntry, "area") ?? string.Empty;
+        var package = GetFieldValue(_currentEntry, "package") ?? string.Empty;
+
+        using var suggestionDialog = new FolderNameSuggestionDialog(
+            title,
+            helpText,
+            _currentProject.FolderNamePrefix ?? string.Empty,
+            _currentEntry.EntryNumber,
+            area,
+            package,
+            extension);
+
+        if (suggestionDialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return false;
+        }
+
+        if (!string.Equals(_currentProject.FolderNamePrefix ?? string.Empty, suggestionDialog.Prefix, StringComparison.Ordinal))
+        {
+            _currentProject.FolderNamePrefix = suggestionDialog.Prefix;
+            _hasUnsavedChanges = true;
+            UpdateAutosaveLabel();
+        }
+
+        proposedName = suggestionDialog.ProposedName;
         return true;
     }
 
@@ -979,25 +1133,29 @@ public sealed class DailyTrackingForm : Form
 
     private string? ResolveInputReceivedDialogInitialPath(string? currentPath)
     {
-        if (!string.IsNullOrWhiteSpace(currentPath) && Directory.Exists(currentPath))
-        {
-            return currentPath;
-        }
-
         if (_currentProject is null)
         {
             return null;
         }
 
-        foreach (var entry in _currentProject.Entries.OrderByDescending(item => item.UpdatedAtLocal))
+        var lastFolder = _sharedPathService.Resolve(_currentProject.LastEntryFolderPath, directory: true);
+        if (!string.IsNullOrWhiteSpace(lastFolder) && Directory.Exists(lastFolder))
         {
-            if (entry.Values.TryGetValue(InputReceivedPathKey, out var entryPath) && !string.IsNullOrWhiteSpace(entryPath) && Directory.Exists(entryPath))
+            return lastFolder;
+        }
+
+        foreach (var entry in _currentProject.Entries.Where(item => item.EntryId != _currentEntry?.EntryId).OrderByDescending(item => item.EntryNumber))
+        {
+            if (entry.Values.TryGetValue(InputReceivedPathKey, out var entryPath) &&
+                _sharedPathService.Resolve(entryPath, directory: true) is { } localPath && Directory.Exists(localPath))
             {
-                return entryPath;
+                return localPath;
             }
         }
 
-        return null;
+        return !string.IsNullOrWhiteSpace(currentPath) && Directory.Exists(currentPath)
+            ? currentPath
+            : null;
     }
 
     private void InputReceivedPathLabel_Click(object? sender, MouseEventArgs e)
@@ -1059,9 +1217,21 @@ public sealed class DailyTrackingForm : Form
             return false;
         }
 
-        var selectedFilePath = useSelectedPathWithoutDialog
-            ? _markdownFilePathLabel.Tag as string
-            : ShowMarkdownSaveFileDialog();
+        string? selectedFilePath;
+
+        if (useSelectedPathWithoutDialog)
+        {
+            selectedFilePath = _markdownFilePathLabel.Tag as string;
+        }
+        else
+        {
+            if (!TryShowFolderNameSuggestion("Nombre sugerido de archivo Markdown", "Indica un prefijo opcional. Se usara como nombre inicial al crear el archivo.", extension: ".md", out var proposedFileName))
+            {
+                return false;
+            }
+
+            selectedFilePath = ShowMarkdownSaveFileDialog(proposedFileName);
+        }
 
         if (string.IsNullOrWhiteSpace(selectedFilePath))
         {
@@ -1075,6 +1245,18 @@ public sealed class DailyTrackingForm : Form
                     MessageBoxIcon.Information);
             }
 
+            return false;
+        }
+
+        if (!useSelectedPathWithoutDialog && !EnsureSharePointRootForPath(selectedFilePath))
+        {
+            return false;
+        }
+
+        selectedFilePath = _sharedPathService.Resolve(selectedFilePath);
+        if (string.IsNullOrWhiteSpace(selectedFilePath))
+        {
+            MessageBox.Show(this, "Configura la raíz local de SharePoint para acceder a este archivo.", "Ruta de SharePoint", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
 
@@ -1116,9 +1298,9 @@ public sealed class DailyTrackingForm : Form
 
         var selectedDirectory = Path.GetDirectoryName(selectedFilePath);
 
-        if (!string.IsNullOrWhiteSpace(selectedDirectory))
+        if (!useSelectedPathWithoutDialog && _currentProject is not null && !string.IsNullOrWhiteSpace(selectedDirectory))
         {
-            _workspaceService.SetLastMarkdownFolderPath(selectedDirectory);
+            _currentProject.LastMarkdownParentPath = _sharedPathService.ToStoredPath(selectedDirectory, directory: true);
         }
 
         ApplySynchronizedNotesToCurrentEntry(synchronizedNotesText);
@@ -1127,11 +1309,10 @@ public sealed class DailyTrackingForm : Form
         return true;
     }
 
-    private string? ShowMarkdownSaveFileDialog()
+    private string? ShowMarkdownSaveFileDialog(string fileName)
     {
         var currentPath = _markdownFilePathLabel.Tag as string;
         var initialDirectory = ResolveMarkdownDialogInitialDirectory(currentPath);
-        var fileName = ResolveMarkdownDialogFileName(currentPath);
 
         using var dialog = new SaveFileDialog
         {
@@ -1151,11 +1332,25 @@ public sealed class DailyTrackingForm : Form
 
     private string? ResolveMarkdownDialogInitialDirectory(string? currentPath)
     {
-        var lastMarkdownFolderPath = _workspaceService.GetLastMarkdownFolderPath();
-
-        if (!string.IsNullOrWhiteSpace(lastMarkdownFolderPath) && Directory.Exists(lastMarkdownFolderPath))
+        var lastMarkdownDirectory = _sharedPathService.Resolve(_currentProject?.LastMarkdownParentPath, directory: true);
+        if (!string.IsNullOrWhiteSpace(lastMarkdownDirectory) && Directory.Exists(lastMarkdownDirectory))
         {
-            return lastMarkdownFolderPath;
+            return lastMarkdownDirectory;
+        }
+
+        if (_currentProject is not null)
+        {
+            foreach (var entry in _currentProject.Entries.Where(item => item.EntryId != _currentEntry?.EntryId).OrderByDescending(item => item.EntryNumber))
+            {
+                if (entry.Values.TryGetValue(MarkdownFilePathKey, out var entryPath) && !string.IsNullOrWhiteSpace(entryPath))
+                {
+                    var entryDirectory = Path.GetDirectoryName(_sharedPathService.Resolve(entryPath));
+                    if (!string.IsNullOrWhiteSpace(entryDirectory) && Directory.Exists(entryDirectory))
+                    {
+                        return entryDirectory;
+                    }
+                }
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(currentPath))
@@ -1177,30 +1372,6 @@ public sealed class DailyTrackingForm : Form
 
         var projectsFolderPath = _workspaceService.GetProjectsFolderPath();
         return Directory.Exists(projectsFolderPath) ? projectsFolderPath : null;
-    }
-
-    private string ResolveMarkdownDialogFileName(string? currentPath)
-    {
-        if (!string.IsNullOrWhiteSpace(currentPath))
-        {
-            return Path.GetFileName(currentPath);
-        }
-
-        var projectName = _currentProject?.ProjectName ?? "registro";
-        var entryNumber = _currentEntry?.EntryNumber ?? 0;
-        var safeProjectName = BuildSafeFileNamePart(projectName);
-        return $"{safeProjectName}-registro-{entryNumber:000}.md";
-    }
-
-    private static string BuildSafeFileNamePart(string value)
-    {
-        var invalidChars = Path.GetInvalidFileNameChars();
-        var sanitized = new string(value
-            .Trim()
-            .Select(character => invalidChars.Contains(character) ? '_' : character)
-            .ToArray());
-
-        return string.IsNullOrWhiteSpace(sanitized) ? "registro" : sanitized;
     }
 
     private static string? ResolveMarkdownTemplatePath()
@@ -1408,32 +1579,47 @@ public sealed class DailyTrackingForm : Form
         return $"[{DateTime.Now:yyyy-MM-dd HH:mm}] ";
     }
 
+    private static string FormatBoldNoteSegment(string text)
+    {
+        return $"**{text}**";
+    }
+
+    private string BuildCommentPrefixWithCurrentStatus()
+    {
+        var prefix = BuildCommentPrefix();
+        var status = _currentEntry is null ? null : GetFieldValue(_currentEntry, StatusFieldKey);
+
+        return string.IsNullOrWhiteSpace(status)
+            ? prefix
+            : prefix + FormatBoldNoteSegment(status.Trim()) + " ";
+    }
+
     private void CommentsTextBox_KeyDown(object? sender, KeyEventArgs e)
     {
-        if (sender is not TextBox textBox || e.KeyCode != Keys.Enter)
+        if (sender is not RichTextBox textBox || e.KeyCode != Keys.Enter)
         {
             return;
         }
 
-        textBox.SelectedText = Environment.NewLine + BuildCommentPrefix();
+        textBox.SelectedText = Environment.NewLine + BuildCommentPrefixWithCurrentStatus();
         e.SuppressKeyPress = true;
     }
 
     private void CommentsTextBox_KeyPress(object? sender, KeyPressEventArgs e)
     {
-        if (sender is not TextBox textBox || char.IsControl(e.KeyChar))
+        if (sender is not RichTextBox textBox || char.IsControl(e.KeyChar))
         {
             return;
         }
 
         if (ShouldInsertCommentPrefixAtCaret(textBox))
         {
-            textBox.SelectedText = BuildCommentPrefix() + e.KeyChar;
+            textBox.SelectedText = BuildCommentPrefixWithCurrentStatus() + e.KeyChar;
             e.Handled = true;
         }
     }
 
-    private static bool ShouldInsertCommentPrefixAtCaret(TextBox textBox)
+    private static bool ShouldInsertCommentPrefixAtCaret(RichTextBox textBox)
     {
         if (textBox.TextLength == 0)
         {
@@ -1451,6 +1637,48 @@ public sealed class DailyTrackingForm : Form
         var lineLength = (nextNewLineIndex < 0 ? textBox.Text.Length : nextNewLineIndex) - caretIndex;
         var currentLine = lineLength > 0 ? textBox.Text.Substring(caretIndex, lineLength).TrimStart('\r') : string.Empty;
         return !HasCommentTimestampPrefix(currentLine);
+    }
+
+    private void ApplyNotesFormatting(RichTextBox notesTextBox)
+    {
+        var selectionStart = notesTextBox.SelectionStart;
+        var selectionLength = notesTextBox.SelectionLength;
+
+        notesTextBox.SelectAll();
+        notesTextBox.SelectionColor = notesTextBox.ForeColor;
+
+        foreach (Match match in NoteTimestampRegex.Matches(notesTextBox.Text))
+        {
+            notesTextBox.Select(match.Index, match.Length);
+            notesTextBox.SelectionColor = Color.Red;
+        }
+
+        if (_statusFieldDefinition is not null)
+        {
+            foreach (Match match in NoteStatusRegex.Matches(notesTextBox.Text))
+            {
+                var status = match.Groups["status"].Value.Trim();
+                var knownStatus = _statusFieldDefinition.Options.FirstOrDefault(option =>
+                    string.Equals(option, status, StringComparison.OrdinalIgnoreCase));
+
+                if (knownStatus is null)
+                {
+                    continue;
+                }
+
+                notesTextBox.Select(match.Index, match.Length);
+                notesTextBox.SelectionColor = OptionColorHelper.GetColor(_statusFieldDefinition, knownStatus);
+            }
+        }
+
+        notesTextBox.Select(
+            Math.Min(selectionStart, notesTextBox.TextLength),
+            Math.Min(selectionLength, Math.Max(0, notesTextBox.TextLength - selectionStart)));
+
+        if (selectionLength == 0)
+        {
+            notesTextBox.SelectionColor = notesTextBox.ForeColor;
+        }
     }
 
     private static bool HasCommentTimestampPrefix(string text)
@@ -1494,6 +1722,8 @@ public sealed class DailyTrackingForm : Form
         if (_workspaceService.RememberFieldValue(_schema, _currentProject, field, value) && !comboBox.Items.Contains(value))
         {
             comboBox.Items.Add(value);
+            _hasUnsavedChanges = true;
+            UpdateAutosaveLabel();
         }
     }
 
@@ -1547,6 +1777,8 @@ public sealed class DailyTrackingForm : Form
         }
 
         _workspaceService.ForgetFieldValue(_schema, _currentProject, field, value);
+        _hasUnsavedChanges = true;
+        UpdateAutosaveLabel();
         RefreshEditableOptionItems(_currentProject);
 
         if (string.Equals(comboBox.Text.Trim(), value, StringComparison.OrdinalIgnoreCase))
@@ -1612,21 +1844,44 @@ public sealed class DailyTrackingForm : Form
         e.DrawFocusRectangle();
     }
 
+    private static Func<string, Color>? BuildOptionColorResolver(TrackingFieldDefinition? field)
+    {
+        return field is null ? null : value => OptionColorHelper.GetColor(field, value);
+    }
+
     private void DailyTrackingForm_Load(object? sender, EventArgs e)
     {
         FitWindowToContent();
+        try
+        {
+            LoadInitialProject();
+        }
+        catch (DirectoryNotFoundException ex)
+        {
+            MessageBox.Show(this, $"{ex.Message}\n\nSelecciona la raíz local de SharePoint y la carpeta de proyectos.", "Carpeta no disponible", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ChooseProjectsFolderButton_Click(this, EventArgs.Empty);
+        }
+        catch (Exception ex) when (IsSharedProjectError(ex))
+        {
+            ShowSharedProjectError(ex);
+        }
+    }
+
+    private void LoadInitialProject()
+    {
         RefreshProjectSelector(Guid.Empty);
-
         var project = _workspaceService.TryOpenLastProject();
-
         if (project is null)
         {
-            project = PromptCreateProject(closeWhenCancelled: true);
+            var firstProject = _workspaceService.GetProjects().FirstOrDefault();
+            project = firstProject is null
+                ? PromptCreateProject(closeWhenCancelled: false)
+                : _workspaceService.OpenProject(firstProject.ProjectId);
         }
-
         if (project is not null)
         {
             LoadProject(project);
+            HandleMergeAfterOpen();
         }
     }
 
@@ -1634,7 +1889,7 @@ public sealed class DailyTrackingForm : Form
     private void FitWindowToContent()
     {
         // Chrome above/around the dynamic field grid: hero + toolbar + content/editor paddings + heading + scroll top padding.
-        const int chromeHeight = 130 + 76 + 18 + 24 + 28 + 8;
+        const int chromeHeight = 160 + 76 + 18 + 24 + 28 + 8;
         const int buffer = 16;
 
         var desiredClientHeight = chromeHeight + _editorLayout.PreferredSize.Height + buffer;
@@ -1663,13 +1918,19 @@ public sealed class DailyTrackingForm : Form
         return project;
     }
 
-    private void LoadProject(TrackingProject project)
+    private void LoadProject(TrackingProject project, bool createInitialEntry = true)
     {
         _currentProject = project;
         _hasUnsavedChanges = false;
         RefreshEditableOptionItems(project);
+        _assignedToFilterDropDown.SetOptions(project.Entries
+            .Select(entry => GetFieldValue(entry, "assignedTo"))
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase));
 
-        if (_currentProject.Entries.Count == 0)
+        if (createInitialEntry && _currentProject.Entries.Count == 0)
         {
             _currentEntry = _workspaceService.CreateEntry(_currentProject, _schema);
             EnsureInitialStatusNote(_currentEntry);
@@ -1686,10 +1947,19 @@ public sealed class DailyTrackingForm : Form
         {
             LoadEntry(entryToLoad);
         }
+        else
+        {
+            UpdateAutosaveLabel();
+        }
     }
 
     private void LoadEntry(TrackingEntry entry)
     {
+        if (_pendingLongTextChanges && !ReferenceEquals(_currentEntry, entry))
+        {
+            CommitPendingLongTextChanges();
+        }
+
         _currentEntry = entry;
         EnsureUpdatedDateAutoFlag(entry);
         _suppressEvents = true;
@@ -1701,6 +1971,11 @@ public sealed class DailyTrackingForm : Form
 
             switch (control)
             {
+                case RichTextBox richTextBox:
+                    richTextBox.Text = value ?? string.Empty;
+                    ApplyNotesFormatting(richTextBox);
+                    break;
+
                 case TextBox textBox:
                     textBox.Text = value ?? string.Empty;
                     break;
@@ -1736,11 +2011,12 @@ public sealed class DailyTrackingForm : Form
 
         var inputReceivedPath = entry.Values.TryGetValue(InputReceivedPathKey, out var storedPath) ? storedPath : null;
         var markdownFilePath = entry.Values.TryGetValue(MarkdownFilePathKey, out var storedMarkdownPath) ? storedMarkdownPath : null;
-        UpdateInputReceivedPathDisplay(inputReceivedPath);
-        UpdateMarkdownFilePathDisplay(markdownFilePath);
+        UpdateInputReceivedPathDisplay(_sharedPathService.Resolve(inputReceivedPath, directory: true) ?? inputReceivedPath);
+        UpdateMarkdownFilePathDisplay(_sharedPathService.Resolve(markdownFilePath) ?? markdownFilePath);
         SetUpdatedDateAutoCheckboxState(ReadUpdatedDateAutoFlag(entry));
 
         _suppressEvents = false;
+        _pendingLongTextChanges = false;
         UpdateAutosaveLabel();
         SelectCurrentEntryInList();
     }
@@ -1785,10 +2061,11 @@ public sealed class DailyTrackingForm : Form
 
         var inputReceivedPath = _inputReceivedPathLabel.Tag as string;
         var markdownFilePath = _markdownFilePathLabel.Tag as string;
-        _currentEntry.Values[InputReceivedPathKey] = string.IsNullOrWhiteSpace(inputReceivedPath) ? null : inputReceivedPath;
-        _currentEntry.Values[MarkdownFilePathKey] = string.IsNullOrWhiteSpace(markdownFilePath) ? null : markdownFilePath;
+        _currentEntry.Values[InputReceivedPathKey] = string.IsNullOrWhiteSpace(inputReceivedPath) ? null : _sharedPathService.ToStoredPath(inputReceivedPath, directory: true);
+        _currentEntry.Values[MarkdownFilePathKey] = string.IsNullOrWhiteSpace(markdownFilePath) ? null : _sharedPathService.ToStoredPath(markdownFilePath);
 
         _currentEntry.UpdatedAtLocal = DateTime.Now;
+        _pendingLongTextChanges = false;
         _hasUnsavedChanges = true;
         RefreshEntriesList();
         UpdateProjectSummary();
@@ -1805,7 +2082,7 @@ public sealed class DailyTrackingForm : Form
         var normalizedNotes = NormalizeNotesForEditor(synchronizedNotesText);
         _currentEntry.Values[NotesFieldKey] = string.IsNullOrWhiteSpace(normalizedNotes) ? null : normalizedNotes;
 
-        if (!_fieldControls.TryGetValue(NotesFieldKey, out var notesControl) || notesControl is not TextBox notesTextBox)
+        if (!_fieldControls.TryGetValue(NotesFieldKey, out var notesControl) || notesControl is not RichTextBox notesTextBox)
         {
             return;
         }
@@ -1814,6 +2091,7 @@ public sealed class DailyTrackingForm : Form
         _suppressEvents = true;
         notesTextBox.Text = normalizedNotes;
         notesTextBox.SelectionStart = notesTextBox.TextLength;
+        ApplyNotesFormatting(notesTextBox);
         _suppressEvents = previousSuppressState;
     }
 
@@ -1835,8 +2113,7 @@ public sealed class DailyTrackingForm : Form
             return;
         }
 
-        var status = GetFieldValue(entry, StatusFieldKey) ?? "Nuevo";
-        AppendNoteEntry(entry, status);
+        AppendNoteEntry(entry, "Nuevo");
     }
 
     private void ForceUpdatedDateToToday(TrackingEntry entry)
@@ -1904,14 +2181,14 @@ public sealed class DailyTrackingForm : Form
             return;
         }
 
-        var line = BuildCommentPrefix() + normalizedNoteText;
+        var line = BuildCommentPrefix() + FormatBoldNoteSegment(normalizedNoteText);
         var combinedNotes = string.IsNullOrWhiteSpace(currentNotes)
             ? line
             : currentNotes + Environment.NewLine + line;
 
         entry.Values[NotesFieldKey] = combinedNotes;
 
-        if (!_fieldControls.TryGetValue(NotesFieldKey, out var notesControl) || notesControl is not TextBox notesTextBox)
+        if (!_fieldControls.TryGetValue(NotesFieldKey, out var notesControl) || notesControl is not RichTextBox notesTextBox)
         {
             return;
         }
@@ -1920,6 +2197,7 @@ public sealed class DailyTrackingForm : Form
         _suppressEvents = true;
         notesTextBox.Text = combinedNotes;
         notesTextBox.SelectionStart = notesTextBox.TextLength;
+        ApplyNotesFormatting(notesTextBox);
         _suppressEvents = previousSuppressState;
     }
 
@@ -1938,8 +2216,15 @@ public sealed class DailyTrackingForm : Form
             return false;
         }
 
-        var lastText = StripCommentPrefix(lines[^1]);
+        var lastText = StripBoldMarkers(StripCommentPrefix(lines[^1]));
         return string.Equals(lastText, nextNoteText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string StripBoldMarkers(string text)
+    {
+        return text.StartsWith("**", StringComparison.Ordinal) && text.EndsWith("**", StringComparison.Ordinal) && text.Length >= 4
+            ? text[2..^2]
+            : text;
     }
 
     private static string StripCommentPrefix(string noteLine)
@@ -1958,53 +2243,229 @@ public sealed class DailyTrackingForm : Form
         return noteLine.Trim();
     }
 
-    private void SaveCurrentProject()
+    private bool SaveCurrentProject()
     {
+        CommitPendingLongTextChanges();
+
         if (_currentProject is null)
         {
-            return;
+            return true;
         }
 
-        _workspaceService.SaveProject(_currentProject);
-        _hasUnsavedChanges = false;
+        var selectedEntryId = _currentEntry?.EntryId;
+        try
+        {
+            var merged = _workspaceService.SaveProject(_currentProject);
+            var incoming = merged.IncorporatedChanges;
+            merged = ResolveConflicts(merged);
+            LoadMergedProject(merged, selectedEntryId);
+            ShowMergeNotice(incoming);
+            ShowOtherEditorsNotice();
+            return true;
+        }
+        catch (Exception ex) when (IsSharedProjectError(ex))
+        {
+            ShowSharedProjectError(ex);
+            return false;
+        }
+    }
+
+    private ProjectMergeResult ResolveConflicts(ProjectMergeResult merged)
+    {
+        while (merged.Conflicts.Count > 0)
+        {
+            var conflict = merged.Conflicts[0];
+            using var dialog = new FieldConflictDialog(conflict);
+            if (dialog.ShowDialog(this) != DialogResult.OK || dialog.SelectedChangeId is not { } selected)
+            {
+                break;
+            }
+            merged = _workspaceService.ResolveConflict(conflict, selected);
+        }
+        return merged;
+    }
+
+    private void LoadMergedProject(ProjectMergeResult merged, Guid? selectedEntryId)
+    {
+        _currentEntry = null;
+        _pendingConflictCount = merged.Conflicts.Count;
+        LoadProject(merged.Project, createInitialEntry: false);
+        if (selectedEntryId is { } id && merged.Project.Entries.FirstOrDefault(entry => entry.EntryId == id) is { } selected)
+        {
+            LoadEntry(selected);
+        }
+        _pendingConflictCount = merged.Conflicts.Count;
         UpdateAutosaveLabel();
+    }
+
+    private void HandleMergeAfterOpen(Guid? selectedEntryId = null)
+    {
+        ShowOtherEditorsNotice();
+        if (_hasUnsavedChanges) return;
+        var merged = _workspaceService.LastMergeResult;
+        if (merged is null || merged.Project.ProjectId != _currentProject?.ProjectId) return;
+        var incoming = merged.IncorporatedChanges;
+        merged = ResolveConflicts(merged);
+        LoadMergedProject(merged, selectedEntryId);
+        ShowMergeNotice(incoming);
+    }
+
+    private void ShowMergeNotice(int count)
+    {
+        if (count > 0)
+        {
+            MessageBox.Show(this, $"Se han incorporado {count} cambios sincronizados de este proyecto.",
+                "JSON fusionados", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+
+    private void ShowOtherEditorsNotice()
+    {
+        var newlySeen = _workspaceService.OtherEditors
+            .Where(editor => _announcedEditorSessions.Add(editor.SessionId))
+            .ToList();
+        if (newlySeen.Count == 0) return;
+        var people = string.Join(Environment.NewLine, newlySeen.Select(editor =>
+            $"• {editor.UserName} ({editor.MachineName}), activo a las {editor.UpdatedAtUtc.ToLocalTime():HH:mm}"));
+        MessageBox.Show(this,
+            $"Según los archivos ya sincronizados, también tienen abierto este proyecto:{Environment.NewLine}{Environment.NewLine}{people}{Environment.NewLine}{Environment.NewLine}Los cambios se fusionarán al guardar o volver a abrir el proyecto.",
+            "Otros usuarios en el proyecto", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     // If there are unsaved changes, prompts to save/discard/cancel. Returns true when the caller should proceed
     // (switch project, change folder or close the app); false when the user cancelled the action.
     private bool ConfirmUnsavedChangesBeforeProceeding()
     {
-        if (!_hasUnsavedChanges)
+        CommitPendingLongTextChanges();
+
+        if (_hasUnsavedChanges)
+        {
+            var result = MessageBox.Show(
+                this,
+                "Hay cambios sin guardar en el proyecto actual. ¿Deseas guardarlos antes de continuar?",
+                "Cambios sin guardar",
+                MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Warning);
+
+            switch (result)
+            {
+                case DialogResult.Yes:
+                    if (!SaveCurrentProject()) return false;
+                    break;
+
+                case DialogResult.No:
+                    _hasUnsavedChanges = false;
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        try
+        {
+            if (!PromptUpdateMarkdownFilesForProject()) return false;
+        }
+        catch (Exception ex) when (IsSharedProjectError(ex))
+        {
+            ShowSharedProjectError(ex);
+            return false;
+        }
+        return true;
+    }
+
+    // Offers to regenerate the .md file of every task in the current project that has one assigned via "Crear MD".
+    // Tasks without a Markdown file selected are skipped silently.
+    private bool PromptUpdateMarkdownFilesForProject()
+    {
+        var entriesWithMarkdown = GetEntriesWithMarkdownFile();
+
+        if (entriesWithMarkdown.Count == 0)
         {
             return true;
         }
 
+        var question = entriesWithMarkdown.Count == 1
+            ? "Hay 1 tarea con un archivo Markdown asociado. ¿Deseas actualizar ese archivo .md ahora?"
+            : $"Hay {entriesWithMarkdown.Count} tareas con archivo Markdown asociado. ¿Deseas actualizar esos archivos .md ahora?";
+
         var result = MessageBox.Show(
             this,
-            "Hay cambios sin guardar en el proyecto actual. ¿Deseas guardarlos antes de continuar?",
-            "Cambios sin guardar",
-            MessageBoxButtons.YesNoCancel,
-            MessageBoxIcon.Warning);
+            question,
+            "Actualizar archivos Markdown",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question);
 
-        switch (result)
+        if (result == DialogResult.Yes)
         {
-            case DialogResult.Yes:
-                SaveCurrentProject();
-                return true;
-
-            case DialogResult.No:
-                _hasUnsavedChanges = false;
-                return true;
-
-            default:
-                return false;
+            return UpdateMarkdownFilesForEntries(entriesWithMarkdown);
         }
+        return true;
+    }
+
+    private List<TrackingEntry> GetEntriesWithMarkdownFile()
+    {
+        if (_currentProject is null)
+        {
+            return [];
+        }
+
+        return _currentProject.Entries
+            .Where(entry => !string.IsNullOrWhiteSpace(GetFieldValue(entry, MarkdownFilePathKey)))
+            .ToList();
+    }
+
+    private bool UpdateMarkdownFilesForEntries(IReadOnlyList<TrackingEntry> entries)
+    {
+        var templatePath = ResolveMarkdownTemplatePath();
+        var errors = new List<string>();
+
+        foreach (var entry in entries)
+        {
+            var markdownFilePath = _sharedPathService.Resolve(GetFieldValue(entry, MarkdownFilePathKey));
+
+            if (string.IsNullOrWhiteSpace(markdownFilePath) || !File.Exists(markdownFilePath))
+            {
+                errors.Add($"Tarea #{entry.EntryNumber}: archivo MD no disponible en este equipo.");
+                continue;
+            }
+
+            if (!_markdownExporter.TryCreateOrUpdate(markdownFilePath, templatePath ?? string.Empty, entry, out var synchronizedNotesText, out var errorMessage))
+            {
+                errors.Add($"Tarea #{entry.EntryNumber}: {errorMessage}");
+                continue;
+            }
+
+            entry.Values[NotesFieldKey] = string.IsNullOrWhiteSpace(synchronizedNotesText) ? null : synchronizedNotesText;
+
+            if (_currentEntry is not null && _currentEntry.EntryId == entry.EntryId)
+            {
+                ApplySynchronizedNotesToCurrentEntry(synchronizedNotesText);
+            }
+        }
+
+        if (_currentProject is not null && !SaveCurrentProject())
+        {
+            return false;
+        }
+
+        if (errors.Count > 0)
+        {
+            MessageBox.Show(
+                this,
+                "No se pudieron actualizar algunos archivos Markdown:" + Environment.NewLine + Environment.NewLine + string.Join(Environment.NewLine, errors),
+                "Actualizar archivos Markdown",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+        return true;
     }
 
     private static string? ReadControlValue(Control control)
     {
         return control switch
         {
+            RichTextBox richTextBox => string.IsNullOrWhiteSpace(richTextBox.Text) ? null : richTextBox.Text.Trim(),
             TextBox textBox => string.IsNullOrWhiteSpace(textBox.Text) ? null : textBox.Text.Trim(),
             ComboBox comboBox => string.IsNullOrWhiteSpace(comboBox.Text) ? null : comboBox.Text,
             DateTimePicker datePicker => datePicker.Checked ? datePicker.Value.ToString("yyyy-MM-dd") : null,
@@ -2014,52 +2475,94 @@ public sealed class DailyTrackingForm : Form
 
     private void RefreshProjectSelector(Guid selectedProjectId)
     {
+        var projects = _workspaceService.GetProjects();
+        var previousSuppressEvents = _suppressEvents;
         _suppressEvents = true;
-        _projectSelector.Items.Clear();
-
-        foreach (var project in _workspaceService.GetProjects())
+        try
         {
-            _projectSelector.Items.Add(new ProjectSelectorItem(project.ProjectId, project.ProjectName));
-        }
-
-        if (_projectSelector.Items.Count > 0)
-        {
-            var selectedIndex = 0;
-
-            if (selectedProjectId != Guid.Empty)
+            _projectSelector.Items.Clear();
+            foreach (var project in projects)
             {
-                for (var index = 0; index < _projectSelector.Items.Count; index++)
-                {
-                    if (_projectSelector.Items[index] is ProjectSelectorItem item && item.ProjectId == selectedProjectId)
-                    {
-                        selectedIndex = index;
-                        break;
-                    }
-                }
+                _projectSelector.Items.Add(new ProjectSelectorItem(project.ProjectId, project.ProjectName));
             }
 
-            _projectSelector.SelectedIndex = selectedIndex;
+            if (_projectSelector.Items.Count > 0)
+            {
+                var selectedIndex = 0;
+                if (selectedProjectId != Guid.Empty)
+                {
+                    for (var index = 0; index < _projectSelector.Items.Count; index++)
+                    {
+                        if (_projectSelector.Items[index] is ProjectSelectorItem item && item.ProjectId == selectedProjectId)
+                        {
+                            selectedIndex = index;
+                            break;
+                        }
+                    }
+                }
+                _projectSelector.SelectedIndex = selectedIndex;
+            }
+        }
+        finally
+        {
+            _suppressEvents = previousSuppressEvents;
+        }
+    }
+
+    private void RestoreSelectedProject()
+    {
+        if (_currentProject is null)
+        {
+            return;
         }
 
-        _suppressEvents = false;
+        var previousSuppressEvents = _suppressEvents;
+        _suppressEvents = true;
+        try
+        {
+            for (var index = 0; index < _projectSelector.Items.Count; index++)
+            {
+                if (_projectSelector.Items[index] is ProjectSelectorItem item && item.ProjectId == _currentProject.ProjectId)
+                {
+                    _projectSelector.SelectedIndex = index;
+                    return;
+                }
+            }
+        }
+        finally
+        {
+            _suppressEvents = previousSuppressEvents;
+        }
     }
 
     private void RefreshEntriesList()
     {
+        if (_currentProject is not null)
+        {
+            _assignedToFilterDropDown.UpdateOptions(_currentProject.Entries
+                .Select(entry => GetFieldValue(entry, "assignedTo"))
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.CurrentCultureIgnoreCase));
+        }
+
         _entriesListView.BeginUpdate();
         _entriesListView.Items.Clear();
 
         foreach (var entry in GetSortedEntries())
         {
-            var listItem = new ListViewItem(entry.EntryNumber.ToString())
+            var listItem = new ListViewItem(GetFieldValue(entry, StatusFieldKey) ?? string.Empty)
             {
-                Tag = entry.EntryId
+                Tag = entry.EntryId,
+                UseItemStyleForSubItems = false
             };
+            listItem.SubItems.Add(GetFieldValue(entry, PriorityFieldKey) ?? string.Empty);
+            listItem.SubItems.Add(entry.EntryNumber.ToString());
             listItem.SubItems.Add(GetEntryDate(entry));
             listItem.SubItems.Add(GetFieldValue(entry, "discipline") ?? "-");
             listItem.SubItems.Add(GetFieldValue(entry, "area") ?? "-");
             listItem.SubItems.Add(GetFieldValue(entry, "package") ?? "-");
-            listItem.SubItems.Add(GetFieldValue(entry, "status") ?? "-");
             _entriesListView.Items.Add(listItem);
         }
 
@@ -2077,23 +2580,62 @@ public sealed class DailyTrackingForm : Form
 
         IEnumerable<TrackingEntry> entries = _currentProject.Entries;
 
-        if (!string.IsNullOrEmpty(_statusFilterValue))
+        var statusFilterValues = _statusFilterDropDown.GetSelectedValues();
+
+        if (statusFilterValues.Count > 0)
         {
-            entries = entries.Where(entry => string.Equals(GetFieldValue(entry, "status"), _statusFilterValue, StringComparison.OrdinalIgnoreCase));
+            entries = entries.Where(entry => statusFilterValues.Contains(GetFieldValue(entry, "status") ?? string.Empty, StringComparer.OrdinalIgnoreCase));
+        }
+
+        var priorityFilterValues = _priorityFilterDropDown.GetSelectedValues();
+
+        if (priorityFilterValues.Count > 0)
+        {
+            entries = entries.Where(entry => priorityFilterValues.Contains(GetFieldValue(entry, "priority") ?? string.Empty, StringComparer.OrdinalIgnoreCase));
+        }
+
+        var assignedToFilterValues = _assignedToFilterDropDown.GetSelectedValues();
+        if (assignedToFilterValues.Count > 0)
+        {
+            entries = entries.Where(entry => assignedToFilterValues.Contains(GetFieldValue(entry, "assignedTo") ?? string.Empty, StringComparer.OrdinalIgnoreCase));
         }
 
         var descending = _sortOrder == SortOrder.Descending;
 
         return _sortColumnIndex switch
         {
-            0 => descending ? entries.OrderByDescending(entry => entry.EntryNumber) : entries.OrderBy(entry => entry.EntryNumber),
-            1 => descending ? entries.OrderByDescending(GetSortableDate) : entries.OrderBy(GetSortableDate),
-            2 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "discipline") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "discipline") ?? string.Empty),
-            3 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "area") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "area") ?? string.Empty),
-            4 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "package") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "package") ?? string.Empty),
-            5 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "status") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "status") ?? string.Empty),
+            0 => SortEntriesByRank(entries, StatusFieldKey, StatusRanks, descending),
+            1 => SortEntriesByRank(entries, PriorityFieldKey, PriorityRanks, descending),
+            2 => descending ? entries.OrderByDescending(entry => entry.EntryNumber) : entries.OrderBy(entry => entry.EntryNumber),
+            3 => descending ? entries.OrderByDescending(GetSortableDate) : entries.OrderBy(GetSortableDate),
+            4 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "discipline") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "discipline") ?? string.Empty),
+            5 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "area") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "area") ?? string.Empty),
+            6 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "package") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "package") ?? string.Empty),
             _ => entries.OrderByDescending(entry => entry.UpdatedAtLocal)
         };
+    }
+
+    private static IEnumerable<TrackingEntry> SortEntriesByRank(
+        IEnumerable<TrackingEntry> entries,
+        string fieldKey,
+        IReadOnlyDictionary<string, int> ranks,
+        bool descending)
+    {
+        var rankedEntries = entries.Select(entry =>
+        {
+            var value = GetFieldValue(entry, fieldKey) ?? string.Empty;
+            return (Entry: entry, Rank: ranks.TryGetValue(value, out var rank) ? rank : (int?)null);
+        });
+
+        return descending
+            ? rankedEntries
+                .OrderBy(item => item.Rank is null)
+                .ThenByDescending(item => item.Rank)
+                .Select(item => item.Entry)
+            : rankedEntries
+                .OrderBy(item => item.Rank is null)
+                .ThenBy(item => item.Rank)
+                .Select(item => item.Entry);
     }
 
     private DateTime GetSortableDate(TrackingEntry entry)
@@ -2162,55 +2704,88 @@ public sealed class DailyTrackingForm : Form
         _projectSummaryLabel.Text = $"Proyecto activo: {_currentProject.ProjectName}  |  Registros: {_currentProject.Entries.Count}";
     }
 
-    // Shows the full folder path as a tooltip and as a label under the "Carpeta de proyectos" button, sizing the
-    // panel to the longer of the button/path text so the path is never cut off (falls back to ellipsis only if it
-    // would not fit next to the title area at all).
+    // The path uses up to four lines in the space left by the project controls.
     private void UpdateProjectsFolderDisplay()
     {
-        var path = _workspaceService.GetProjectsFolderPath();
-        var displayedPath = FormatPathForTwoLines(path);
+        string? path;
+        try
+        {
+            path = _workspaceService.GetProjectsFolderPath();
+        }
+        catch (DirectoryNotFoundException)
+        {
+            path = null;
+        }
+        var leftWidth = _projectSelectorRow.Padding.Horizontal + _projectSelectorRow.Controls.Cast<Control>()
+            .Sum(control => (control.AutoSize ? control.GetPreferredSize(Size.Empty).Width : control.Width) + control.Margin.Horizontal);
+        var maxWidth = Math.Max(220, ClientSize.Width - 48 - leftWidth - 18);
+        var displayedPath = path is null
+            ? "Configura la raíz SharePoint"
+            : FormatPathForLines(path, maxWidth - 16, _projectsFolderPathLabel.Font);
         _toolTip.SetToolTip(_chooseProjectsFolderButton, path);
         _projectsFolderPathLabel.Text = displayedPath;
-        _toolTip.SetToolTip(_projectsFolderPathLabel, $"{path}\n(Clic para abrir en el explorador de archivos)");
+        _toolTip.SetToolTip(_projectsFolderPathLabel, path is null
+            ? "Selecciona la carpeta de proyectos"
+            : $"{path}\n(Clic para abrir en el explorador de archivos)");
 
         var folderButtonSize = _chooseProjectsFolderButton.GetPreferredSize(Size.Empty);
         var displayedLines = displayedPath.Split(Environment.NewLine);
-        var pathTextWidth = displayedLines.Max(line => TextRenderer.MeasureText(line, _projectsFolderPathLabel.Font).Width);
+        var pathTextWidth = displayedLines.Max(line => TextRenderer.MeasureText(line, _projectsFolderPathLabel.Font,
+            Size.Empty, TextFormatFlags.NoPadding).Width);
         var desiredWidth = Math.Max(folderButtonSize.Width, pathTextWidth) + 16;
-        var maxWidth = Math.Max(240, ClientSize.Width - 650);
 
-        _folderButtonPanel.Width = Math.Min(Math.Max(desiredWidth, 240), maxWidth);
+        _folderButtonPanel.Width = Math.Min(desiredWidth, maxWidth);
         _chooseProjectsFolderButton.Left = _folderButtonPanel.Width - folderButtonSize.Width - 8;
         _projectsFolderPathLabel.Left = 0;
         _projectsFolderPathLabel.Width = _folderButtonPanel.Width;
     }
 
-    private static string FormatPathForTwoLines(string path)
+    private static string FormatPathForLines(string path, int maxLineWidth, Font font)
     {
-        if (string.IsNullOrWhiteSpace(path) || path.Length < 56)
+        bool Fits(string text) => TextRenderer.MeasureText(text, font, Size.Empty,
+            TextFormatFlags.NoPadding).Width <= maxLineWidth;
+        var fullWidth = TextRenderer.MeasureText(path, font, Size.Empty, TextFormatFlags.NoPadding).Width;
+        var lineCount = path.Length > 105 || fullWidth > maxLineWidth * 3
+            ? 4 : path.Length > 55 || fullWidth > maxLineWidth ? 3 : 1;
+        if (lineCount == 1) return path;
+        var lines = new List<string>(lineCount);
+        var start = 0;
+        for (var lineIndex = 0; lineIndex < lineCount - 1; lineIndex++)
         {
-            return path;
+            var target = start + (int)Math.Ceiling((double)(path.Length - start) / (lineCount - lineIndex));
+            var maxCut = path.Length - (lineCount - lineIndex - 1);
+            var cuts = Enumerable.Range(start + 1, maxCut - start)
+                .Where(index => path[index - 1] is '\\' or '/')
+                .Where(index => Fits(path[start..index]))
+                .ToList();
+            var cut = cuts.Count > 0
+                ? cuts.MinBy(index => Math.Abs(index - target))
+                : Math.Min(target, maxCut);
+            while (cut > start + 1 && !Fits(path[start..cut])) cut--;
+            lines.Add(path[start..cut]);
+            start = cut;
         }
-
-        var midpoint = path.Length / 2;
-        var splitIndex = path.LastIndexOf('\\', midpoint);
-
-        if (splitIndex < 0)
+        var finalLine = path[start..];
+        if (!Fits(finalLine))
         {
-            splitIndex = path.LastIndexOf('/', midpoint);
+            var length = finalLine.Length;
+            while (length > 0 && !Fits(finalLine[..length] + "…")) length--;
+            finalLine = finalLine[..length] + "…";
         }
-
-        if (splitIndex <= 0 || splitIndex >= path.Length - 1)
-        {
-            return path;
-        }
-
-        return path[..splitIndex] + Environment.NewLine + path[(splitIndex + 1)..];
+        lines.Add(finalLine);
+        return string.Join(Environment.NewLine, lines);
     }
 
     private void UpdateAutosaveLabel()
     {
         _deleteEntryButton.Enabled = _currentEntry is not null;
+        _newEntryButton.Enabled = _currentProject is not null;
+        _saveEntryButton.Enabled = _currentProject is not null && _hasUnsavedChanges;
+        _saveEntryButton.BackColor = _hasUnsavedChanges
+            ? Color.FromArgb(232, 144, 34)
+            : Color.FromArgb(96, 100, 112);
+        _manageProjectUsersButton.Enabled = _currentProject is not null;
+        _editorLayout.Enabled = _currentEntry is not null;
 
         if (_currentEntry is null)
         {
@@ -2221,8 +2796,10 @@ public sealed class DailyTrackingForm : Form
         }
 
         _autosaveLabel.Text = _hasUnsavedChanges
-            ? "Cambios sin guardar"
-            : $"Guardado: {_currentEntry.UpdatedAtLocal:dd/MM/yyyy HH:mm:ss}";
+            ? "Cambios sin guardar en este equipo"
+            : _pendingConflictCount > 0
+                ? $"Guardado localmente · {_pendingConflictCount} conflicto(s) pendiente(s)"
+                : $"Guardado localmente: {_currentEntry.UpdatedAtLocal:dd/MM/yyyy HH:mm:ss}";
     }
 
     private void FieldValueChanged(object? sender, EventArgs e)
@@ -2232,6 +2809,29 @@ public sealed class DailyTrackingForm : Form
             return;
         }
 
+        PersistCurrentEntry();
+    }
+
+    private void LongTextValueChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _currentEntry is null || _pendingLongTextChanges)
+        {
+            return;
+        }
+
+        _pendingLongTextChanges = true;
+        _hasUnsavedChanges = true;
+        UpdateAutosaveLabel();
+    }
+
+    private void CommitPendingLongTextChanges()
+    {
+        if (_suppressEvents || !_pendingLongTextChanges)
+        {
+            return;
+        }
+
+        _pendingLongTextChanges = false;
         PersistCurrentEntry();
     }
 
@@ -2249,16 +2849,27 @@ public sealed class DailyTrackingForm : Form
 
         if (!ConfirmUnsavedChangesBeforeProceeding())
         {
-            RefreshProjectSelector(_currentProject?.ProjectId ?? Guid.Empty);
+            RestoreSelectedProject();
             return;
         }
 
-        var project = _workspaceService.OpenProject(item.ProjectId);
+        TrackingProject? project;
+        try
+        {
+            project = _workspaceService.OpenProject(item.ProjectId);
+        }
+        catch (Exception ex) when (IsSharedProjectError(ex))
+        {
+            ShowSharedProjectError(ex);
+            RestoreSelectedProject();
+            return;
+        }
 
         if (project is not null)
         {
             _currentEntry = null;
             LoadProject(project);
+            HandleMergeAfterOpen();
         }
     }
 
@@ -2269,7 +2880,16 @@ public sealed class DailyTrackingForm : Form
             return;
         }
 
-        var project = PromptCreateProject(closeWhenCancelled: false);
+        TrackingProject? project;
+        try
+        {
+            project = PromptCreateProject(closeWhenCancelled: false);
+        }
+        catch (Exception ex) when (IsSharedProjectError(ex))
+        {
+            ShowSharedProjectError(ex);
+            return;
+        }
 
         if (project is not null)
         {
@@ -2282,7 +2902,16 @@ public sealed class DailyTrackingForm : Form
     // project (or prompts to create one) if the deleted project was the one currently loaded.
     private void DeleteProjectButton_Click(object? sender, EventArgs e)
     {
-        var projects = _workspaceService.GetProjects();
+        IReadOnlyList<TrackingProject> projects;
+        try
+        {
+            projects = _workspaceService.GetProjects();
+        }
+        catch (Exception ex) when (IsSharedProjectError(ex))
+        {
+            ShowSharedProjectError(ex);
+            return;
+        }
 
         if (projects.Count == 0)
         {
@@ -2304,8 +2933,21 @@ public sealed class DailyTrackingForm : Form
             return;
         }
 
+        if (!ConfirmUnsavedChangesBeforeProceeding())
+        {
+            return;
+        }
+
         var wasCurrentProject = projectToDelete.ProjectId == _currentProject?.ProjectId;
-        _workspaceService.DeleteProject(projectToDelete);
+        try
+        {
+            _workspaceService.DeleteProject(projectToDelete);
+        }
+        catch (Exception ex) when (IsSharedProjectError(ex))
+        {
+            ShowSharedProjectError(ex);
+            return;
+        }
 
         if (!wasCurrentProject)
         {
@@ -2317,11 +2959,24 @@ public sealed class DailyTrackingForm : Form
         _currentProject = null;
         _currentEntry = null;
 
-        var nextProject = _workspaceService.GetProjects().FirstOrDefault() ?? PromptCreateProject(closeWhenCancelled: false);
+        TrackingProject? nextProject;
+        try
+        {
+            var nextAvailable = _workspaceService.GetProjects().FirstOrDefault();
+            nextProject = nextAvailable is null
+                ? PromptCreateProject(closeWhenCancelled: false)
+                : _workspaceService.OpenProject(nextAvailable.ProjectId);
+        }
+        catch (Exception ex) when (IsSharedProjectError(ex))
+        {
+            ShowSharedProjectError(ex);
+            nextProject = null;
+        }
 
         if (nextProject is not null)
         {
             LoadProject(nextProject);
+            HandleMergeAfterOpen();
         }
         else
         {
@@ -2347,6 +3002,8 @@ public sealed class DailyTrackingForm : Form
         }
 
         _workspaceService.UpdateAllowedUsers(_currentProject, dialog.Users);
+        _hasUnsavedChanges = true;
+        UpdateAutosaveLabel();
     }
 
     private void NewEntryButton_Click(object? sender, EventArgs e)
@@ -2356,7 +3013,9 @@ public sealed class DailyTrackingForm : Form
             return;
         }
 
-        var entry = _workspaceService.CreateEntry(_currentProject, _schema);
+        if (!ConfirmCurrentEntryChanges()) return;
+        var assignedTo = _currentEntry is null ? null : GetFieldValue(_currentEntry, "assignedTo");
+        var entry = _workspaceService.CreateEntry(_currentProject, _schema, assignedTo);
         EnsureInitialStatusNote(entry);
         LoadProject(_currentProject);
         _hasUnsavedChanges = true;
@@ -2370,6 +3029,7 @@ public sealed class DailyTrackingForm : Form
             return;
         }
 
+        CommitPendingLongTextChanges();
         var confirmResult = MessageBox.Show(
             this,
             "Se eliminara este registro de forma permanente. Deseas continuar?",
@@ -2385,9 +3045,8 @@ public sealed class DailyTrackingForm : Form
 
         _workspaceService.DeleteEntry(_currentProject, _currentEntry);
         _currentEntry = null;
-        LoadProject(_currentProject);
         _hasUnsavedChanges = true;
-        UpdateAutosaveLabel();
+        SaveCurrentProject();
     }
 
     private void ViewChartButton_Click(object? sender, EventArgs e)
@@ -2415,7 +3074,16 @@ public sealed class DailyTrackingForm : Form
     // Opens the projects folder in File Explorer when the user clicks its path label.
     private void ProjectsFolderPathLabel_Click(object? sender, EventArgs e)
     {
-        var path = _workspaceService.GetProjectsFolderPath();
+        string path;
+        try
+        {
+            path = _workspaceService.GetProjectsFolderPath();
+        }
+        catch (DirectoryNotFoundException)
+        {
+            MessageBox.Show(this, "Selecciona la carpeta de proyectos y la raíz local de SharePoint.", "Carpeta de proyectos", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
 
         if (!Directory.Exists(path))
         {
@@ -2428,37 +3096,86 @@ public sealed class DailyTrackingForm : Form
 
     private void ChooseProjectsFolderButton_Click(object? sender, EventArgs e)
     {
-        if (!ConfirmUnsavedChangesBeforeProceeding())
+        string currentFolderPath;
+        try
+        {
+            currentFolderPath = _workspaceService.GetProjectsFolderPath();
+        }
+        catch (DirectoryNotFoundException)
+        {
+            currentFolderPath = string.Empty;
+        }
+        using var dialog = new ProjectsFolderHistoryDialog(
+            _workspaceService.GetRecentProjectsFolderPaths(),
+            currentFolderPath,
+            _workspaceService.RemoveRecentProjectsFolderPath);
+
+        if (dialog.ShowDialog(this) != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedFolderPath))
+        {
+            RefreshSharedPathDisplays();
+            return;
+        }
+
+        var selectedPath = dialog.SelectedFolderPath;
+        var currentProjectId = _currentProject?.ProjectId;
+        if (_currentProject is not null && !ConfirmUnsavedChangesBeforeProceeding())
+        {
+            return;
+        }
+        if (!EnsureSharePointRootForPath(selectedPath))
         {
             return;
         }
 
-        var currentFolderPath = _workspaceService.GetProjectsFolderPath();
-
-        using var dialog = new FolderBrowserDialog
+        try
         {
-            Description = "Selecciona la carpeta compartida donde se guardaran los proyectos",
-            UseDescriptionForTitle = true,
-            SelectedPath = Directory.Exists(currentFolderPath) ? currentFolderPath : string.Empty
-        };
-
-        if (dialog.ShowDialog(this) != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedPath))
+            _workspaceService.ReleaseCurrentProject();
+        }
+        catch (Exception ex) when (IsSharedProjectError(ex))
         {
+            ShowSharedProjectError(ex);
             return;
         }
 
-        _workspaceService.SetProjectsFolderPath(dialog.SelectedPath);
+        _currentProject = null;
+        _currentEntry = null;
+        UpdateAutosaveLabel();
+
+        _workspaceService.SetProjectsFolderPath(selectedPath);
         UpdateProjectsFolderDisplay();
 
-        var previousProjectId = _currentProject?.ProjectId;
-        var projects = _workspaceService.GetProjects();
+        var previousProjectId = currentProjectId;
+        IReadOnlyList<TrackingProject> projects;
+        try
+        {
+            projects = _workspaceService.GetProjects();
+        }
+        catch (Exception ex) when (IsSharedProjectError(ex))
+        {
+            ShowSharedProjectError(ex);
+            return;
+        }
         var projectToLoad = projects.FirstOrDefault(project => project.ProjectId == previousProjectId) ?? projects.FirstOrDefault();
 
         _currentEntry = null;
 
         if (projectToLoad is not null)
         {
-            LoadProject(projectToLoad);
+            try
+            {
+                var opened = _workspaceService.OpenProject(projectToLoad.ProjectId);
+                if (opened is not null)
+                {
+                    LoadProject(opened);
+                    HandleMergeAfterOpen();
+                }
+            }
+            catch (Exception ex) when (IsSharedProjectError(ex))
+            {
+                ShowSharedProjectError(ex);
+                _currentProject = null;
+                UpdateAutosaveLabel();
+            }
         }
         else
         {
@@ -2471,10 +3188,100 @@ public sealed class DailyTrackingForm : Form
 
         MessageBox.Show(
             this,
-            $"Carpeta de proyectos actualizada:\n{dialog.SelectedPath}",
+            $"Carpeta de proyectos actualizada:\n{selectedPath}",
             "Carpeta de proyectos",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
+    }
+
+    private void RefreshCurrentProjectButton_Click(object? sender, EventArgs e)
+    {
+        var projectId = _currentProject?.ProjectId ?? (_projectSelector.SelectedItem as ProjectSelectorItem)?.ProjectId;
+        if (projectId is null || !ConfirmCurrentEntryChanges()) return;
+        try
+        {
+            var selectedEntryId = _currentEntry?.EntryId;
+            var project = _workspaceService.OpenProject(projectId.Value);
+            if (project is null) return;
+            _currentEntry = null;
+            LoadProject(project);
+            HandleMergeAfterOpen(selectedEntryId);
+        }
+        catch (Exception ex) when (IsSharedProjectError(ex))
+        {
+            ShowSharedProjectError(ex);
+        }
+    }
+
+    private bool EnsureSharePointRootForPath(string selectedPath)
+    {
+        if (_sharedPathService.IsWithinLocalRoot(selectedPath))
+        {
+            return true;
+        }
+
+        var sharePath = MessageBox.Show(
+            this,
+            "La ruta elegida no está dentro de la raíz SharePoint configurada.\n\n¿Quieres que esta ruta funcione también en otros equipos?\nSí: elegir la raíz de la biblioteca sincronizada.\nNo: mantener la ruta local absoluta.",
+            "Ruta compartida",
+            MessageBoxButtons.YesNoCancel,
+            MessageBoxIcon.Question,
+            MessageBoxDefaultButton.Button1);
+
+        if (sharePath == DialogResult.No)
+        {
+            return true;
+        }
+
+        if (sharePath != DialogResult.Yes)
+        {
+            return false;
+        }
+
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Selecciona la raíz local de la biblioteca SharePoint que contiene la ruta elegida. Esta configuración solo se guarda en este PC.",
+            UseDescriptionForTitle = true,
+            SelectedPath = _sharedPathService.GetLocalRoot()
+                ?? (Directory.Exists(selectedPath) ? selectedPath : Path.GetDirectoryName(selectedPath) ?? string.Empty)
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return false;
+        }
+
+        if (!selectedPath.StartsWith(Path.TrimEndingDirectorySeparator(dialog.SelectedPath) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(selectedPath, dialog.SelectedPath, StringComparison.OrdinalIgnoreCase))
+        {
+            MessageBox.Show(this, "La raíz elegida no contiene la ruta seleccionada.", "Ruta de SharePoint", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
+        _sharedPathService.SetLocalRoot(dialog.SelectedPath);
+        RefreshSharedPathDisplays();
+        return true;
+    }
+
+    private static bool IsSharedProjectError(Exception ex) =>
+        ex is IOException or UnauthorizedAccessException or InvalidOperationException or JsonException;
+
+    private void ShowSharedProjectError(Exception ex)
+    {
+        MessageBox.Show(this, ex.Message, "Proyecto compartido", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    private void RefreshSharedPathDisplays()
+    {
+        if (_currentEntry is null)
+        {
+            return;
+        }
+
+        var inputPath = GetFieldValue(_currentEntry, InputReceivedPathKey);
+        var markdownPath = GetFieldValue(_currentEntry, MarkdownFilePathKey);
+        UpdateInputReceivedPathDisplay(_sharedPathService.Resolve(inputPath, directory: true) ?? inputPath);
+        UpdateMarkdownFilePathDisplay(_sharedPathService.Resolve(markdownPath) ?? markdownPath);
     }
 
     private void DailyTrackingForm_FormClosing(object? sender, FormClosingEventArgs e)
@@ -2485,7 +3292,41 @@ public sealed class DailyTrackingForm : Form
             return;
         }
 
+        if (_currentProject is not null)
+        {
+            try
+            {
+                var selectedEntryId = _currentEntry?.EntryId;
+                var refreshed = _workspaceService.OpenProject(_currentProject.ProjectId);
+                if (refreshed is not null && _workspaceService.LastMergeResult is { } merged)
+                {
+                    var incoming = merged.IncorporatedChanges;
+                    merged = ResolveConflicts(merged);
+                    _currentProject = merged.Project;
+                    _currentEntry = merged.Project.Entries.FirstOrDefault(entry => entry.EntryId == selectedEntryId);
+                    ShowMergeNotice(incoming);
+                }
+            }
+            catch (Exception ex) when (IsSharedProjectError(ex))
+            {
+                ShowSharedProjectError(ex);
+                e.Cancel = true;
+                return;
+            }
+        }
+
         _workspaceService.CreateExitBackup(_currentProject);
+        try
+        {
+            _workspaceService.ReleaseCurrentProject();
+            _presenceTimer.Stop();
+            _presenceTimer.Dispose();
+        }
+        catch (Exception ex) when (IsSharedProjectError(ex))
+        {
+            ShowSharedProjectError(ex);
+            e.Cancel = true;
+        }
     }
 
     private void EntriesListView_SelectedIndexChanged(object? sender, EventArgs e)
@@ -2497,6 +3338,12 @@ public sealed class DailyTrackingForm : Form
 
         if (_entriesListView.SelectedItems[0].Tag is Guid entryId)
         {
+            if (_currentEntry?.EntryId == entryId) return;
+            if (!ConfirmCurrentEntryChanges())
+            {
+                SelectCurrentEntryInList();
+                return;
+            }
             var entry = _currentProject.Entries.FirstOrDefault(item => item.EntryId == entryId);
 
             if (entry is not null)
@@ -2506,23 +3353,150 @@ public sealed class DailyTrackingForm : Form
         }
     }
 
+    private bool ConfirmCurrentEntryChanges()
+    {
+        CommitPendingLongTextChanges();
+        if (!_hasUnsavedChanges) return true;
+
+        var answer = MessageBox.Show(this,
+            "Hay cambios sin guardar en el registro. ¿Quieres guardarlos antes de continuar?",
+            "Guardar registro", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+        if (answer == DialogResult.Cancel) return false;
+        if (answer == DialogResult.Yes) return SaveCurrentProject();
+
+        if (_currentProject is null) return true;
+        try
+        {
+            var reloaded = _workspaceService.OpenProject(_currentProject.ProjectId);
+            if (reloaded is null) return false;
+            _currentEntry = null;
+            _hasUnsavedChanges = false;
+            _pendingLongTextChanges = false;
+            LoadProject(reloaded, createInitialEntry: false);
+            if (reloaded.Entries.Count > 0) HandleMergeAfterOpen();
+            return true;
+        }
+        catch (Exception ex) when (IsSharedProjectError(ex))
+        {
+            ShowSharedProjectError(ex);
+            return false;
+        }
+    }
+
+    private static void EntriesListView_DrawColumnHeader(object? sender, DrawListViewColumnHeaderEventArgs e)
+    {
+        e.DrawDefault = true;
+    }
+
+    private static void EntriesListView_DrawItem(object? sender, DrawListViewItemEventArgs e)
+    {
+        e.DrawDefault = true;
+    }
+
+    private void EntriesListView_DrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
+    {
+        if (e.ColumnIndex is not 0 and not 1 || e.SubItem is null)
+        {
+            e.DrawDefault = true;
+            return;
+        }
+
+        e.DrawBackground();
+
+        if (e.ColumnIndex == 0)
+        {
+            DrawStatusBadge(e.Graphics, e.Bounds, e.SubItem.Text);
+            return;
+        }
+
+        DrawPriorityIndicator(e.Graphics, e.Bounds, e.SubItem.Text);
+    }
+
+    private void DrawStatusBadge(Graphics graphics, Rectangle bounds, string status)
+    {
+        var diameter = Math.Min(22, Math.Min(bounds.Width - 8, bounds.Height - 6));
+
+        if (diameter <= 0)
+        {
+            return;
+        }
+
+        var badgeBounds = new Rectangle(
+            bounds.Left + ((bounds.Width - diameter) / 2),
+            bounds.Top + ((bounds.Height - diameter) / 2),
+            diameter,
+            diameter);
+        var badgeColor = _statusFieldDefinition is null
+            ? Color.Gainsboro
+            : OptionColorHelper.GetColor(_statusFieldDefinition, status);
+
+        var previousSmoothingMode = graphics.SmoothingMode;
+        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+        using (var badgeBrush = new SolidBrush(badgeColor))
+        using (var borderPen = new Pen(ControlPaint.Dark(badgeColor)))
+        {
+            graphics.FillEllipse(badgeBrush, badgeBounds);
+            graphics.DrawEllipse(borderPen, badgeBounds);
+        }
+
+        graphics.SmoothingMode = previousSmoothingMode;
+
+        var number = StatusRanks.TryGetValue(status, out var mappedNumber) ? mappedNumber.ToString() : "?";
+        var textColor = IsDarkColor(badgeColor) ? Color.White : Color.Black;
+        using var badgeFont = new Font(_entriesListView.Font.FontFamily, 9F, FontStyle.Bold, GraphicsUnit.Point);
+        TextRenderer.DrawText(
+            graphics,
+            number,
+            badgeFont,
+            badgeBounds,
+            textColor,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+    }
+
+    private void DrawPriorityIndicator(Graphics graphics, Rectangle bounds, string priority)
+    {
+        if (!PriorityIndicators.TryGetValue(priority, out var indicator))
+        {
+            return;
+        }
+
+        var indicatorColor = _priorityFieldDefinition is null
+            ? Color.Gainsboro
+            : OptionColorHelper.GetColor(_priorityFieldDefinition, priority);
+        using var indicatorFont = new Font(_entriesListView.Font.FontFamily, 17F, FontStyle.Bold, GraphicsUnit.Point);
+        TextRenderer.DrawText(
+            graphics,
+            indicator,
+            indicatorFont,
+            bounds,
+            indicatorColor,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+    }
+
+    private static bool IsDarkColor(Color color)
+    {
+        return ((color.R * 299) + (color.G * 587) + (color.B * 114)) / 1000 < 145;
+    }
+
     private void EntriesListView_Resize(object? sender, EventArgs e)
     {
-        if (_entriesListView.Columns.Count != 6)
+        if (_entriesListView.Columns.Count != 7)
         {
             return;
         }
 
         var availableWidth = Math.Max(_entriesListView.ClientSize.Width - 8, 260);
-        _entriesListView.Columns[0].Width = 50;
-        _entriesListView.Columns[1].Width = 95;
-        _entriesListView.Columns[5].Width = 100;
+        _entriesListView.Columns[0].Width = 36;
+        _entriesListView.Columns[1].Width = 30;
+        _entriesListView.Columns[2].Width = 50;
+        _entriesListView.Columns[3].Width = 95;
 
-        var remainingWidth = Math.Max(availableWidth - 245, 300);
+        var remainingWidth = Math.Max(availableWidth - 211, 300);
         var columnWidth = Math.Max(remainingWidth / 3, 100);
-        _entriesListView.Columns[2].Width = columnWidth;
-        _entriesListView.Columns[3].Width = columnWidth;
-        _entriesListView.Columns[4].Width = remainingWidth - (columnWidth * 2);
+        _entriesListView.Columns[4].Width = columnWidth;
+        _entriesListView.Columns[5].Width = columnWidth;
+        _entriesListView.Columns[6].Width = remainingWidth - (columnWidth * 2);
     }
 
     private void EntriesListView_ColumnClick(object? sender, ColumnClickEventArgs e)
@@ -2538,44 +3512,6 @@ public sealed class DailyTrackingForm : Form
         }
 
         RefreshEntriesList();
-    }
-
-    private void StatusFilterCombo_SelectedIndexChanged(object? sender, EventArgs e)
-    {
-        _statusFilterValue = _statusFilterCombo.SelectedIndex <= 0 ? null : _statusFilterCombo.Text;
-        RefreshEntriesList();
-    }
-
-    private void EntriesListView_DrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
-    {
-        const int statusColumnIndex = 5;
-
-        if (e.ColumnIndex != statusColumnIndex || _statusFieldDefinition is null || e.Item is null || e.SubItem is null)
-        {
-            e.DrawDefault = true;
-            return;
-        }
-
-        var backColor = e.Item.Selected ? SystemColors.Highlight : Color.White;
-
-        using (var backBrush = new SolidBrush(backColor))
-        {
-            e.Graphics.FillRectangle(backBrush, e.Bounds);
-        }
-
-        var swatchColor = OptionColorHelper.GetColor(_statusFieldDefinition, e.SubItem.Text);
-        var swatchRect = new Rectangle(e.Bounds.Left + 4, e.Bounds.Top + (e.Bounds.Height - 14) / 2, 14, 14);
-
-        using (var swatchBrush = new SolidBrush(swatchColor))
-        {
-            e.Graphics.FillRectangle(swatchBrush, swatchRect);
-        }
-
-        e.Graphics.DrawRectangle(Pens.Gray, swatchRect);
-
-        var textColor = e.Item.Selected ? SystemColors.HighlightText : SystemColors.WindowText;
-        var textRect = new Rectangle(swatchRect.Right + 6, e.Bounds.Top, e.Bounds.Right - swatchRect.Right - 6, e.Bounds.Height);
-        TextRenderer.DrawText(e.Graphics, e.SubItem.Text, _entriesListView.Font, textRect, textColor, TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
     }
 
     private sealed class ProjectSelectorItem

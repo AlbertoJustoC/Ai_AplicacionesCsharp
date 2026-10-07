@@ -22,7 +22,7 @@ public sealed class ProjectWorkspaceService
         _schemaRepository = schemaRepository;
     }
 
-    public TrackingEntry CreateEntry(TrackingProject project, TrackingFormSchema schema)
+    public TrackingEntry CreateEntry(TrackingProject project, TrackingFormSchema schema, string? assignedTo = null)
     {
         var entry = new TrackingEntry
         {
@@ -32,19 +32,36 @@ public sealed class ProjectWorkspaceService
         var today = DateTime.Today.ToString(DateFormat);
         entry.Values["recordDate"] = today;
         entry.Values["updatedDate"] = today;
-        entry.Values["priority"] = "Media";
-        entry.Values["complexity"] = "Media";
-        entry.Values["status"] = "Nuevo";
-
-        foreach (var field in schema.Fields.Where(field => field.DefaultToLastValue && !string.IsNullOrWhiteSpace(field.LastValue)))
+        var latestEntry = project.Entries.OrderByDescending(item => item.EntryNumber).FirstOrDefault();
+        assignedTo ??= latestEntry?.Values.GetValueOrDefault("assignedTo");
+        if (!string.IsNullOrWhiteSpace(assignedTo))
         {
-            if (entry.Values.ContainsKey(field.Key))
-            {
-                continue;
-            }
-
-            entry.Values[field.Key] = field.LastValue;
+            entry.Values["assignedTo"] = assignedTo;
         }
+        var previousEntry = project.Entries
+            .OrderByDescending(item => item.EntryNumber)
+            .FirstOrDefault(item => string.Equals(
+                item.Values.GetValueOrDefault("assignedTo")?.Trim(),
+                assignedTo?.Trim(),
+                StringComparison.OrdinalIgnoreCase));
+
+        if (previousEntry is not null)
+        {
+            foreach (var field in schema.Fields)
+            {
+                if (field.Key is "recordDate" or "updatedDate" or "activity" or "notes")
+                {
+                    continue;
+                }
+
+                if (previousEntry.Values.TryGetValue(field.Key, out var value))
+                {
+                    entry.Values[field.Key] = value;
+                }
+            }
+        }
+
+        entry.Values["status"] = "Nuevo";
 
         project.Entries.Insert(0, entry);
         return entry;
@@ -105,6 +122,16 @@ public sealed class ProjectWorkspaceService
         _projectRepository.SetProjectsFolderPath(newFolderPath);
     }
 
+    public IReadOnlyList<string> GetRecentProjectsFolderPaths()
+    {
+        return _projectRepository.GetRecentProjectsFolderPaths();
+    }
+
+    public void RemoveRecentProjectsFolderPath(string path)
+    {
+        _projectRepository.RemoveRecentProjectsFolderPath(path);
+    }
+
     // Writes a timestamped copy of the given project to the backup folder; called when the app is closing.
     public void CreateExitBackup(TrackingProject? project)
     {
@@ -116,12 +143,23 @@ public sealed class ProjectWorkspaceService
         _projectRepository.SaveBackupCopy(project);
     }
 
+    public void ReleaseCurrentProject() => _projectRepository.ReleaseCurrentProject();
+
+    public ProjectMergeResult? LastMergeResult => _projectRepository.LastMergeResult;
+
+    public IReadOnlyList<ProjectPresence> OtherEditors => _projectRepository.OtherEditors;
+
+    public IReadOnlyList<ProjectPresence> RefreshPresence() => _projectRepository.RefreshPresence();
+
+    public ProjectMergeResult ResolveConflict(ProjectFieldConflict conflict, Guid selectedChangeId) =>
+        _projectRepository.ResolveConflict(conflict, selectedChangeId);
+
     public IReadOnlyList<TrackingProject> GetProjects()
     {
         return _projectRepository.GetAll().Where(IsVisibleToCurrentUser).ToList();
     }
 
-    // Replaces the list of users allowed to see the project (empty list means visible to everyone) and saves it.
+    // Replaces the list of users allowed to see the project; the form saves it with other pending changes.
     public void UpdateAllowedUsers(TrackingProject project, IEnumerable<string> userNames)
     {
         project.AllowedUserNames = userNames
@@ -130,7 +168,6 @@ public sealed class ProjectWorkspaceService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        SaveProject(project);
     }
 
     // A project is visible when no users are assigned (public) or the current Windows user is one of the assigned ones.
@@ -160,22 +197,21 @@ public sealed class ProjectWorkspaceService
 
     public TrackingProject? OpenProject(Guid projectId)
     {
-        var project = _projectRepository.GetById(projectId);
-
-        if (project is not null && !IsVisibleToCurrentUser(project))
+        var preview = _projectRepository.GetAll().FirstOrDefault(item => item.ProjectId == projectId);
+        if (preview is null || !IsVisibleToCurrentUser(preview))
         {
             return null;
         }
 
-        if (project is not null)
-        {
-            if (EnsureEntryNumbers(project))
-            {
-                _projectRepository.Save(project);
-            }
+        var project = _projectRepository.GetById(projectId);
 
-            SetLastProject(project);
+        if (project is not null && !IsVisibleToCurrentUser(project))
+        {
+            _projectRepository.ReleaseCurrentProject();
+            return null;
         }
+
+        if (project is not null) SetLastProject(project);
 
         return project;
     }
@@ -202,7 +238,6 @@ public sealed class ProjectWorkspaceService
             }
 
             customOptions.Add(trimmedValue);
-            _projectRepository.Save(project);
             changed = true;
         }
 
@@ -225,12 +260,9 @@ public sealed class ProjectWorkspaceService
             return;
         }
 
-        var changedProject = false;
-
-        if (project.CustomFieldOptions.TryGetValue(field.Key, out var customOptions) &&
-            customOptions.RemoveAll(option => string.Equals(option, value, StringComparison.OrdinalIgnoreCase)) > 0)
+        if (project.CustomFieldOptions.TryGetValue(field.Key, out var customOptions))
         {
-            changedProject = true;
+            customOptions.RemoveAll(option => string.Equals(option, value, StringComparison.OrdinalIgnoreCase));
         }
 
         var changedSchema = field.Options.RemoveAll(option => string.Equals(option, value, StringComparison.OrdinalIgnoreCase)) > 0;
@@ -241,21 +273,17 @@ public sealed class ProjectWorkspaceService
             changedSchema = true;
         }
 
-        if (changedProject)
-        {
-            _projectRepository.Save(project);
-        }
-
         if (changedSchema)
         {
             _schemaRepository.Save(schema);
         }
     }
 
-    public void SaveProject(TrackingProject project)
+    public ProjectMergeResult SaveProject(TrackingProject project)
     {
-        _projectRepository.Save(project);
-        SetLastProject(project);
+        var result = _projectRepository.Save(project);
+        SetLastProject(result.Project);
+        return result;
     }
 
     public TrackingProject? TryOpenLastProject()
@@ -267,16 +295,18 @@ public sealed class ProjectWorkspaceService
             return null;
         }
 
-        var project = _projectRepository.GetById(preferences.LastProjectId.Value);
-
-        if (project is not null && !IsVisibleToCurrentUser(project))
+        var preview = _projectRepository.GetAll().FirstOrDefault(item => item.ProjectId == preferences.LastProjectId.Value);
+        if (preview is null || !IsVisibleToCurrentUser(preview))
         {
             return null;
         }
 
-        if (project is not null && EnsureEntryNumbers(project))
+        var project = _projectRepository.GetById(preferences.LastProjectId.Value);
+
+        if (project is not null && !IsVisibleToCurrentUser(project))
         {
-            _projectRepository.Save(project);
+            _projectRepository.ReleaseCurrentProject();
+            return null;
         }
 
         return project;

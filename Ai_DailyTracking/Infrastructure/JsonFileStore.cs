@@ -9,6 +9,7 @@ public sealed class JsonFileStore
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
         Converters = { new JsonStringEnumConverter() }
     };
 
@@ -20,7 +21,7 @@ public sealed class JsonFileStore
         }
 
         var json = File.ReadAllText(filePath);
-        return JsonSerializer.Deserialize<T>(json, _serializerOptions) ?? defaultValue;
+        return Deserialize(json, defaultValue);
     }
 
     public void Write<T>(string filePath, T value)
@@ -32,7 +33,12 @@ public sealed class JsonFileStore
             Directory.CreateDirectory(directoryPath);
         }
 
-        var json = JsonSerializer.Serialize(value, _serializerOptions);
+        var json = Serialize(value);
         File.WriteAllText(filePath, json);
     }
+
+    public T Deserialize<T>(string json, T defaultValue) =>
+        JsonSerializer.Deserialize<T>(json, _serializerOptions) ?? defaultValue;
+
+    public string Serialize<T>(T value) => JsonSerializer.Serialize(value, _serializerOptions);
 }

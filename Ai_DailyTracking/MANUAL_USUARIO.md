@@ -45,8 +45,14 @@ Ai_DailyTracking\bin\Release\net8.0-windows\Ai_DailyTracking.exe
 
 ### Registrar una entrada del dia
 1. Rellena los campos de la ficha (Disciplina, Area, Paquete, Estado, Actividad, Notas, etc.).
-2. No hace falta pulsar "Guardar": cada cambio se guarda solo (autoguardado).
+2. Cuando cambies un campo, se ilumina **Guardar registro**. Púlsalo para grabar el cambio con autor, fecha y hora. Si cambias de registro, proyecto o cierras con cambios pendientes, la aplicación pregunta si quieres guardar, descartar o cancelar.
 3. Los cuadros de texto largo (Actividad, Notas) se pueden arrastrar desde el borde inferior para hacerlos mas grandes.
+
+### Fusionar cambios de otros usuarios
+- Al abrir un proyecto, la aplicación avisa si detecta otros usuarios activos en los archivos de presencia ya sincronizados. Este aviso es informativo y no bloquea la edición. Si la sincronización se retrasa, el aviso también puede retrasarse.
+- La aplicación incorpora los cambios que ya estén sincronizados al abrir, guardar un registro y cerrar. También puedes pulsar **Fusionar**.
+- Si dos personas cambian el mismo campo de un registro, se muestran ambos valores y autores para elegir. Las Notas se reúnen como líneas añadidas: borrar o reescribir una línea anterior no elimina su versión histórica. Para Carpeta y ruta MD se conserva el cambio de ruta con fecha posterior.
+- "Guardado localmente" confirma la escritura en este PC, no que OneDrive haya terminado de sincronizar. Los cambios que lleguen más tarde se incorporarán en la siguiente fusión.
 
 ### Consultar el historico
 - La lista de la izquierda/abajo muestra ID, Fecha, Disciplina, Area, Paquete y Estado de todas las entradas del proyecto.

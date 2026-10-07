@@ -5,7 +5,7 @@ Aplicacion de escritorio (WinForms, .NET 8) para el seguimiento diario de tareas
 ## Enfoque
 - Una persona (o un equipo, si se comparte la carpeta de proyectos) lleva un "diario" por proyecto: cada entrada es un evento/tarea del dia con disciplina, area, paquete, estado, actividad, notas, etc.
 - Los campos del formulario NO estan escritos a fuego en el codigo: se generan a partir de un esquema (`tracking-schema.json`) editable, por lo que se pueden anadir/quitar campos (listas cerradas, texto largo, fechas...) sin recompilar.
-- Todo se guarda automaticamente (autoguardado) en archivos JSON, uno por proyecto, para poder abrir/cerrar la app sin perder cambios ni tener que pulsar "Guardar".
+- Los cambios de cada registro se guardan al pulsar "Guardar registro" o al confirmar el guardado al cambiar de registro, proyecto o cerrar. Cada guardado crea un archivo de cambio único; la app fusiona los cambios disponibles y reconstruye un JSON de trabajo local.
 
 ## Que hace hoy
 - Abre automaticamente el ultimo proyecto usado; si no existe ninguno, pide crear uno nuevo.
@@ -17,8 +17,8 @@ Aplicacion de escritorio (WinForms, .NET 8) para el seguimiento diario de tareas
 - Exportacion de una ficha concreta a Markdown y vinculo opcional a una "Carpeta Documentacion" por entrada.
 - Copia de seguridad automatica del proyecto activo al cerrar la aplicacion.
 
-## Persistencia (todo en `%AppData%`, no requiere instalador)
-- Proyectos: `%AppData%\AiDailyTracking\Projects\<nombre-proyecto>-<id>.json` (o la carpeta compartida que se elija con "Carpeta de proyectos").
+## Persistencia (configuración y JSON de trabajo en `%AppData%`)
+- Proyectos: `%AppData%\AiDailyTracking\Projects\<nombre-proyecto>-<id>.json` (o la carpeta sincronizada elegida con "Carpeta de proyectos"). El JSON original es la base histórica; los cambios compartidos están en `.AiDailyTrackingChanges\` y el JSON de trabajo de cada PC en `%AppData%\AiDailyTracking\Working\`.
 - Copias de seguridad: `%AppData%\AiDailyTracking\backup\`
 - Preferencias de la app: `%AppData%\AiDailyTracking\app-preferences.json`
 - Esquema del formulario: `%AppData%\AiDailyTracking\tracking-schema.json`

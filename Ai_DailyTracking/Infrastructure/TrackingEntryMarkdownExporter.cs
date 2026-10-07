@@ -269,17 +269,8 @@ public sealed class TrackingEntryMarkdownExporter
             existingLines.Clear();
         }
 
-        var indexByTimestamp = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-
-        for (var i = 0; i < existingLines.Count; i++)
-        {
-            var timestamp = ExtractBracketTimestamp(existingLines[i]);
-
-            if (!string.IsNullOrWhiteSpace(timestamp) && !indexByTimestamp.ContainsKey(timestamp))
-            {
-                indexByTimestamp[timestamp] = i;
-            }
-        }
+        var remaining = existingLines.GroupBy(line => line, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
 
         foreach (var rawIncomingLine in NormalizeLineEndings(incomingBody).Split('\n'))
         {
@@ -290,25 +281,13 @@ public sealed class TrackingEntryMarkdownExporter
                 continue;
             }
 
-            var timestamp = ExtractBracketTimestamp(incomingLine);
-
-            if (!string.IsNullOrWhiteSpace(timestamp) && indexByTimestamp.TryGetValue(timestamp, out var lineIndex))
+            if (remaining.TryGetValue(incomingLine, out var count) && count > 0)
             {
-                existingLines[lineIndex] = incomingLine;
-                continue;
-            }
-
-            if (string.IsNullOrWhiteSpace(timestamp) && existingLines.Contains(incomingLine, StringComparer.Ordinal))
-            {
+                remaining[incomingLine] = count - 1;
                 continue;
             }
 
             existingLines.Add(incomingLine);
-
-            if (!string.IsNullOrWhiteSpace(timestamp))
-            {
-                indexByTimestamp[timestamp] = existingLines.Count - 1;
-            }
         }
 
         return string.Join("\n", existingLines);

@@ -125,7 +125,9 @@ public sealed class TrackingReportForm : Form
             filter.FieldCombo.Items.Add(field.Label);
         }
 
-        filter.FieldCombo.SelectedIndex = selectFirstField && _optionFields.Count > 0 ? 1 : 0;
+        filter.FieldCombo.SelectedIndex = selectFirstField && _optionFields.Count > 0
+            ? Math.Max(1, _optionFields.FindIndex(field => string.Equals(field.Key, "status", StringComparison.OrdinalIgnoreCase)) + 1)
+            : 0;
         filter.FieldCombo.SelectedIndexChanged += (_, _) => RebuildFilterOptions(filter);
     }
 

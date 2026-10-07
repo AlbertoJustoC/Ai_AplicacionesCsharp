@@ -13,11 +13,14 @@ internal static class Program
 
         var jsonFileStore = new JsonFileStore();
         var preferencesRepository = new AppPreferencesRepository(jsonFileStore);
-        var projectRepository = new TrackingProjectRepository(jsonFileStore, preferencesRepository);
+        var sharedPathService = new SharedPathService(preferencesRepository);
+        var changeStore = new ProjectChangeStore(jsonFileStore);
+        var presenceStore = new ProjectPresenceStore(jsonFileStore);
+        var projectRepository = new TrackingProjectRepository(jsonFileStore, preferencesRepository, sharedPathService, changeStore, presenceStore);
         var schemaRepository = new TrackingSchemaRepository(jsonFileStore);
         var workspaceService = new ProjectWorkspaceService(projectRepository, preferencesRepository, schemaRepository);
         var markdownExporter = new TrackingEntryMarkdownExporter();
 
-        System.Windows.Forms.Application.Run(new DailyTrackingForm(workspaceService, markdownExporter));
+        System.Windows.Forms.Application.Run(new DailyTrackingForm(workspaceService, markdownExporter, sharedPathService));
     }
 }
