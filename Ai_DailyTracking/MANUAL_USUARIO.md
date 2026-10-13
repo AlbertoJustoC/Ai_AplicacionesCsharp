@@ -68,6 +68,8 @@ Ai_DailyTracking\bin\Release\net8.0-windows\Ai_DailyTracking.exe
 2. Elige una carpeta compartida (por ejemplo, una ruta de red accesible por todo el equipo).
 3. A partir de ese momento la app lee y guarda los proyectos en esa carpeta. Cada persona debe repetir este paso una vez, apuntando a la misma ruta compartida.
 
+Las rutas guardadas bajo `C:\Users\<usuario>` se adaptan automáticamente al perfil del PC actual. Si no existe la ruta resultante, pulsa la ruta de la carpeta o del MD y elige una carpeta raíz que contenga un tramo de la ruta antigua. La aplicación comprobará la coincidencia y recordará esa correspondencia en este equipo.
+
 ### Carpeta de documentacion de una entrada
 - Boton "Carpeta Documentacion": permite vincular una carpeta de disco con la documentacion de esa entrada/tarea concreta (por ejemplo, planos o correos relacionados). Clic derecho sobre la ruta mostrada para quitarla.
 

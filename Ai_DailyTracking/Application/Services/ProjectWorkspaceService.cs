@@ -99,6 +99,8 @@ public sealed class ProjectWorkspaceService
         return _projectRepository.GetEffectiveProjectsDirectory();
     }
 
+    public string? GetStoredProjectsFolderPath() => _projectRepository.GetStoredProjectsFolderPath();
+
     public string? GetLastMarkdownFolderPath()
     {
         var preferences = _preferencesRepository.Load();

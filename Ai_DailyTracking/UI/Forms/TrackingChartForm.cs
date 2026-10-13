@@ -16,6 +16,9 @@ public sealed class TrackingChartForm : Form
     private readonly DateTimePicker _toDatePicker = new();
     private readonly CheckBox _useDateRangeCheckBox = new();
     private readonly TrackingLineChartPanel _chartPanel = new();
+    private readonly TrackingTimelinePanel _timelinePanel = new();
+    private readonly Button _toggleChartButton = new();
+    private bool _showTimeline;
     private readonly Label _summaryLabel = new();
 
     public TrackingChartForm(TrackingProject project, TrackingFormSchema schema)
@@ -215,8 +218,31 @@ public sealed class TrackingChartForm : Form
             Margin = new Padding(0, 12, 0, 0)
         };
 
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+
+        _toggleChartButton.Text = "Ver líneas de tiempo";
+        _toggleChartButton.AutoSize = true;
+        _toggleChartButton.FlatStyle = FlatStyle.Flat;
+        _toggleChartButton.Margin = new Padding(0, 0, 0, 8);
+        _toggleChartButton.Click += (_, _) =>
+        {
+            _showTimeline = !_showTimeline;
+            _chartPanel.Visible = !_showTimeline;
+            _timelinePanel.Visible = _showTimeline;
+            _toggleChartButton.Text = _showTimeline ? "Ver gráfico acumulado" : "Ver líneas de tiempo";
+        };
+
+        var charts = new Panel { Dock = DockStyle.Fill };
         _chartPanel.Dock = DockStyle.Fill;
-        card.Controls.Add(_chartPanel);
+        _timelinePanel.Dock = DockStyle.Fill;
+        _timelinePanel.Visible = false;
+        charts.Controls.Add(_chartPanel);
+        charts.Controls.Add(_timelinePanel);
+        layout.Controls.Add(_toggleChartButton, 0, 0);
+        layout.Controls.Add(charts, 0, 1);
+        card.Controls.Add(layout);
         return card;
     }
 
@@ -312,6 +338,7 @@ public sealed class TrackingChartForm : Form
         if (_dateField is null)
         {
             _chartPanel.SetData("Esta ficha no tiene un campo de fecha configurado.", [], []);
+            _timelinePanel.SetData([], null, "Esta ficha no tiene un campo de fecha configurado.");
             _summaryLabel.Text = string.Empty;
             return;
         }
@@ -319,6 +346,7 @@ public sealed class TrackingChartForm : Form
         if (_optionFields.Count == 0)
         {
             _chartPanel.SetData("No hay campos de lista configurados en el esquema.", [], []);
+            _timelinePanel.SetData([], null, "No hay campos de lista configurados en el esquema.");
             _summaryLabel.Text = string.Empty;
             return;
         }
@@ -328,6 +356,7 @@ public sealed class TrackingChartForm : Form
         if (seriesField is null)
         {
             _chartPanel.SetData("Selecciona un campo para mostrar en el grafico.", [], []);
+            _timelinePanel.SetData([], null, "Selecciona un campo para mostrar en el grafico.");
             _summaryLabel.Text = string.Empty;
             return;
         }
@@ -342,6 +371,7 @@ public sealed class TrackingChartForm : Form
             if (GetOptionMenuItems(filter).All(item => !item.Checked))
             {
                 _chartPanel.SetData($"Selecciona al menos una opcion para \"{field!.Label}\".", [], []);
+                _timelinePanel.SetData([], null, $"Selecciona al menos una opción para \"{field.Label}\".");
                 _summaryLabel.Text = string.Empty;
                 return;
             }
@@ -356,6 +386,8 @@ public sealed class TrackingChartForm : Form
         var legendSeries = BuildLegendSeriesWithMetrics(series);
 
         _chartPanel.SetData($"{seriesField.Label}: registros acumulados por dia", dates, legendSeries);
+        var statusField = _schema.Fields.FirstOrDefault(field => string.Equals(field.Key, "status", StringComparison.OrdinalIgnoreCase));
+        _timelinePanel.SetData(TrackingTimelineBuilder.Build(filteredEntries, _schema, _dateField.Key), statusField);
         _summaryLabel.Text = $"Mostrando {filteredEntries.Count} de {_project.Entries.Count} registros totales";
     }
 

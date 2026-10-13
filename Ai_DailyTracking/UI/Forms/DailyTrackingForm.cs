@@ -1062,11 +1062,6 @@ public sealed class DailyTrackingForm : Form
             return false;
         }
 
-        if (!EnsureSharePointRootForPath(selectedPath))
-        {
-            return false;
-        }
-
         if (_currentProject is not null)
         {
             _currentProject.LastEntryFolderPath = _sharedPathService.ToStoredPath(selectedPath, directory: true);
@@ -1160,18 +1155,14 @@ public sealed class DailyTrackingForm : Form
 
     private void InputReceivedPathLabel_Click(object? sender, MouseEventArgs e)
     {
-        if (e.Button != MouseButtons.Left)
+        if (e.Button != MouseButtons.Left || _currentEntry is null)
         {
             return;
         }
 
-        var path = _inputReceivedPathLabel.Tag as string;
-
-        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
-        {
-            return;
-        }
-
+        var path = ResolvePathWithRecovery(GetFieldValue(_currentEntry, InputReceivedPathKey), directory: true);
+        if (path is null) return;
+        UpdateInputReceivedPathDisplay(path);
         TryOpenPath(path);
     }
 
@@ -1221,7 +1212,15 @@ public sealed class DailyTrackingForm : Form
 
         if (useSelectedPathWithoutDialog)
         {
-            selectedFilePath = _markdownFilePathLabel.Tag as string;
+            var storedPath = GetFieldValue(_currentEntry, MarkdownFilePathKey);
+            if (string.IsNullOrWhiteSpace(storedPath))
+            {
+                MessageBox.Show(this, "No hay archivo Markdown seleccionado para actualizar. Usa 'Crear MD' para elegirlo primero.",
+                    "Actualizar MD", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return false;
+            }
+            selectedFilePath = ResolvePathWithRecovery(storedPath, directory: false);
+            if (selectedFilePath is null) return false;
         }
         else
         {
@@ -1248,15 +1247,10 @@ public sealed class DailyTrackingForm : Form
             return false;
         }
 
-        if (!useSelectedPathWithoutDialog && !EnsureSharePointRootForPath(selectedFilePath))
-        {
-            return false;
-        }
-
         selectedFilePath = _sharedPathService.Resolve(selectedFilePath);
         if (string.IsNullOrWhiteSpace(selectedFilePath))
         {
-            MessageBox.Show(this, "Configura la raíz local de SharePoint para acceder a este archivo.", "Ruta de SharePoint", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, "La ruta del archivo MD no es válida en este equipo.", "Ruta de archivo MD", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
 
@@ -1399,18 +1393,14 @@ public sealed class DailyTrackingForm : Form
 
     private void MarkdownFilePathLabel_Click(object? sender, MouseEventArgs e)
     {
-        if (e.Button != MouseButtons.Left)
+        if (e.Button != MouseButtons.Left || _currentEntry is null)
         {
             return;
         }
 
-        var filePath = _markdownFilePathLabel.Tag as string;
-
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
-        {
-            return;
-        }
-
+        var filePath = ResolvePathWithRecovery(GetFieldValue(_currentEntry, MarkdownFilePathKey), directory: false);
+        if (filePath is null) return;
+        UpdateMarkdownFilePathDisplay(filePath);
         TryOpenPath(filePath);
     }
 
@@ -1538,13 +1528,15 @@ public sealed class DailyTrackingForm : Form
             ? "Sin ruta de carpeta de documentación"
             : selectedPath;
         _inputReceivedPathLabel.ForeColor = selectedPath is null ? Color.FromArgb(132, 140, 152) : Color.FromArgb(22, 58, 92);
-        _inputReceivedPathLabel.Cursor = pathExists ? Cursors.Hand : Cursors.Default;
+        _inputReceivedPathLabel.Cursor = selectedPath is null ? Cursors.Default : Cursors.Hand;
 
         _toolTip.SetToolTip(
             _inputReceivedPathLabel,
             selectedPath is null
                 ? "Seleccion opcional: carpeta de documentación. Clic derecho para limpiar."
-                : $"{selectedPath}\n(Clic para abrir en el explorador de archivos, clic derecho para limpiar)");
+                : pathExists
+                    ? $"{selectedPath}\n(Clic para abrir en el explorador de archivos, clic derecho para limpiar)"
+                    : $"{selectedPath}\n(Clic para localizar la carpeta, clic derecho para limpiar)");
     }
 
     private void UpdateMarkdownFilePathDisplay(string? path)
@@ -1557,7 +1549,7 @@ public sealed class DailyTrackingForm : Form
             ? "Sin archivo MD"
             : selectedPath;
         _markdownFilePathLabel.ForeColor = selectedPath is null ? Color.FromArgb(132, 140, 152) : Color.FromArgb(22, 58, 92);
-        _markdownFilePathLabel.Cursor = fileExists ? Cursors.Hand : Cursors.Default;
+        _markdownFilePathLabel.Cursor = selectedPath is null ? Cursors.Default : Cursors.Hand;
 
         _toolTip.SetToolTip(
             _markdownFilePathLabel,
@@ -1565,7 +1557,7 @@ public sealed class DailyTrackingForm : Form
                 ? "Seleccion opcional: archivo Markdown de esta ficha. Clic derecho para limpiar."
                 : fileExists
                     ? $"{selectedPath}\n(Clic para abrir el archivo, clic derecho para limpiar)"
-                    : $"{selectedPath}\n(Clic derecho para limpiar)");
+                    : $"{selectedPath}\n(Clic para localizar el archivo, clic derecho para limpiar)");
     }
 
     private static bool IsCommentsField(TrackingFieldDefinition field)
@@ -1858,7 +1850,24 @@ public sealed class DailyTrackingForm : Form
         }
         catch (DirectoryNotFoundException ex)
         {
-            MessageBox.Show(this, $"{ex.Message}\n\nSelecciona la raíz local de SharePoint y la carpeta de proyectos.", "Carpeta no disponible", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            var storedFolder = _workspaceService.GetStoredProjectsFolderPath();
+            var recovered = ResolvePathWithRecovery(storedFolder, directory: true);
+            if (recovered is not null)
+            {
+                _workspaceService.SetProjectsFolderPath(recovered);
+                UpdateProjectsFolderDisplay();
+                try
+                {
+                    LoadInitialProject();
+                }
+                catch (Exception retryError) when (IsSharedProjectError(retryError))
+                {
+                    ShowSharedProjectError(retryError);
+                }
+                return;
+            }
+            MessageBox.Show(this, $"{ex.Message}\n\nSelecciona la carpeta de proyectos en este PC.",
+                "Carpeta no disponible", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             ChooseProjectsFolderButton_Click(this, EventArgs.Empty);
         }
         catch (Exception ex) when (IsSharedProjectError(ex))
@@ -2422,7 +2431,7 @@ public sealed class DailyTrackingForm : Form
 
         foreach (var entry in entries)
         {
-            var markdownFilePath = _sharedPathService.Resolve(GetFieldValue(entry, MarkdownFilePathKey));
+            var markdownFilePath = ResolvePathWithRecovery(GetFieldValue(entry, MarkdownFilePathKey), directory: false);
 
             if (string.IsNullOrWhiteSpace(markdownFilePath) || !File.Exists(markdownFilePath))
             {
@@ -2720,7 +2729,7 @@ public sealed class DailyTrackingForm : Form
             .Sum(control => (control.AutoSize ? control.GetPreferredSize(Size.Empty).Width : control.Width) + control.Margin.Horizontal);
         var maxWidth = Math.Max(220, ClientSize.Width - 48 - leftWidth - 18);
         var displayedPath = path is null
-            ? "Configura la raíz SharePoint"
+            ? "Selecciona la carpeta de proyectos"
             : FormatPathForLines(path, maxWidth - 16, _projectsFolderPathLabel.Font);
         _toolTip.SetToolTip(_chooseProjectsFolderButton, path);
         _projectsFolderPathLabel.Text = displayedPath;
@@ -3074,23 +3083,14 @@ public sealed class DailyTrackingForm : Form
     // Opens the projects folder in File Explorer when the user clicks its path label.
     private void ProjectsFolderPathLabel_Click(object? sender, EventArgs e)
     {
-        string path;
-        try
-        {
-            path = _workspaceService.GetProjectsFolderPath();
-        }
-        catch (DirectoryNotFoundException)
-        {
-            MessageBox.Show(this, "Selecciona la carpeta de proyectos y la raíz local de SharePoint.", "Carpeta de proyectos", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        if (!Directory.Exists(path))
-        {
-            MessageBox.Show(this, "La carpeta de proyectos no existe o no esta disponible.", "Carpeta de proyectos", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
+        var storedPath = _workspaceService.GetStoredProjectsFolderPath();
+        var path = string.IsNullOrWhiteSpace(storedPath)
+            ? _workspaceService.GetProjectsFolderPath()
+            : ResolvePathWithRecovery(storedPath, directory: true);
+        if (path is null) return;
+        if (!string.IsNullOrWhiteSpace(storedPath))
+            _workspaceService.SetProjectsFolderPath(path);
+        UpdateProjectsFolderDisplay();
         Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
     }
 
@@ -3122,11 +3122,6 @@ public sealed class DailyTrackingForm : Form
         {
             return;
         }
-        if (!EnsureSharePointRootForPath(selectedPath))
-        {
-            return;
-        }
-
         try
         {
             _workspaceService.ReleaseCurrentProject();
@@ -3213,54 +3208,55 @@ public sealed class DailyTrackingForm : Form
         }
     }
 
-    private bool EnsureSharePointRootForPath(string selectedPath)
+    private string? ResolvePathWithRecovery(string? storedPath, bool directory)
     {
-        if (_sharedPathService.IsWithinLocalRoot(selectedPath))
-        {
-            return true;
-        }
+        if (string.IsNullOrWhiteSpace(storedPath)) return null;
+        var resolved = _sharedPathService.Resolve(storedPath, directory);
+        if (resolved is not null && (directory ? Directory.Exists(resolved) : File.Exists(resolved)))
+            return resolved;
 
-        var sharePath = MessageBox.Show(
-            this,
-            "La ruta elegida no está dentro de la raíz SharePoint configurada.\n\n¿Quieres que esta ruta funcione también en otros equipos?\nSí: elegir la raíz de la biblioteca sincronizada.\nNo: mantener la ruta local absoluta.",
-            "Ruta compartida",
-            MessageBoxButtons.YesNoCancel,
-            MessageBoxIcon.Question,
-            MessageBoxDefaultButton.Button1);
+        var pathType = directory ? "carpeta" : "archivo MD";
+        if (MessageBox.Show(this,
+                $"No se encuentra la {pathType} en este PC:\n{storedPath}\n\n" +
+                "Se ha intentado adaptar la ruta al perfil de Windows actual. " +
+                "¿Quieres elegir una carpeta raíz para buscar una carpeta con el mismo nombre y reconstruir la ruta?",
+                "Localizar ruta compartida", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return null;
 
-        if (sharePath == DialogResult.No)
-        {
-            return true;
-        }
-
-        if (sharePath != DialogResult.Yes)
-        {
-            return false;
-        }
-
+        var currentRoot = _sharedPathService.GetLocalRoot();
         using var dialog = new FolderBrowserDialog
         {
-            Description = "Selecciona la raíz local de la biblioteca SharePoint que contiene la ruta elegida. Esta configuración solo se guarda en este PC.",
+            Description = "Selecciona una carpeta que sea parte de la ruta original o que contenga una de sus carpetas. Se comprobará la ruta completa antes de usarla.",
             UseDescriptionForTitle = true,
-            SelectedPath = _sharedPathService.GetLocalRoot()
-                ?? (Directory.Exists(selectedPath) ? selectedPath : Path.GetDirectoryName(selectedPath) ?? string.Empty)
+            SelectedPath = !string.IsNullOrWhiteSpace(currentRoot) && Directory.Exists(currentRoot)
+                ? currentRoot : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
         };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return null;
 
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        var matches = _sharedPathService.FindMatches(storedPath, dialog.SelectedPath, directory);
+        if (matches.Count == 0)
         {
-            return false;
+            MessageBox.Show(this,
+                "No se ha encontrado una ruta completa bajo la carpeta elegida. Selecciona una carpeta más cercana al destino y vuelve a intentarlo.",
+                "Ruta no encontrada", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return null;
         }
 
-        if (!selectedPath.StartsWith(Path.TrimEndingDirectorySeparator(dialog.SelectedPath) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(selectedPath, dialog.SelectedPath, StringComparison.OrdinalIgnoreCase))
+        SharedPathMatch selected;
+        if (matches.Count == 1)
         {
-            MessageBox.Show(this, "La raíz elegida no contiene la ruta seleccionada.", "Ruta de SharePoint", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return false;
+            selected = matches[0];
+        }
+        else
+        {
+            using var selection = new SharedPathMatchDialog(matches);
+            if (selection.ShowDialog(this) != DialogResult.OK || selection.SelectedMatch is null) return null;
+            selected = selection.SelectedMatch;
         }
 
-        _sharedPathService.SetLocalRoot(dialog.SelectedPath);
+        _sharedPathService.RememberMatch(selected);
         RefreshSharedPathDisplays();
-        return true;
+        return selected.ResolvedPath;
     }
 
     private static bool IsSharedProjectError(Exception ex) =>
@@ -3268,7 +3264,17 @@ public sealed class DailyTrackingForm : Form
 
     private void ShowSharedProjectError(Exception ex)
     {
-        MessageBox.Show(this, ex.Message, "Proyecto compartido", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        var message = ex.Message;
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current.HResult is not (unchecked((int)0x8007017C) or unchecked((int)0x8007016A))) continue;
+            if (!message.Contains("Mantener siempre en este dispositivo", StringComparison.OrdinalIgnoreCase))
+                message += "\n\nOneDrive no permite leer un archivo sincronizado. Marca la carpeta del proyecto como " +
+                           "'Mantener siempre en este dispositivo', espera a que aparezca disponible y vuelve a intentarlo. " +
+                           "No borres el archivo de cambios.";
+            break;
+        }
+        MessageBox.Show(this, message, "Proyecto compartido", MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
     private void RefreshSharedPathDisplays()
@@ -3414,6 +3420,8 @@ public sealed class DailyTrackingForm : Form
 
     private void DrawStatusBadge(Graphics graphics, Rectangle bounds, string status)
     {
+        const int sectorCount = 5;
+        const float sectorAngle = 360F / sectorCount;
         var diameter = Math.Min(22, Math.Min(bounds.Width - 8, bounds.Height - 6));
 
         if (diameter <= 0)
@@ -3429,29 +3437,37 @@ public sealed class DailyTrackingForm : Form
         var badgeColor = _statusFieldDefinition is null
             ? Color.Gainsboro
             : OptionColorHelper.GetColor(_statusFieldDefinition, status);
+        var filledSectors = StatusRanks.TryGetValue(status, out var rank) ? rank : 0;
 
         var previousSmoothingMode = graphics.SmoothingMode;
         graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
+        using (var emptyBrush = new SolidBrush(Color.FromArgb(232, 236, 240)))
         using (var badgeBrush = new SolidBrush(badgeColor))
-        using (var borderPen = new Pen(ControlPaint.Dark(badgeColor)))
+        using (var separatorPen = new Pen(Color.White, 1F))
+        using (var borderPen = new Pen(Color.FromArgb(110, 120, 130)))
         {
-            graphics.FillEllipse(badgeBrush, badgeBounds);
+            graphics.FillEllipse(emptyBrush, badgeBounds);
+            for (var sector = 0; sector < filledSectors; sector++)
+            {
+                graphics.FillPie(badgeBrush, badgeBounds, -90F + sector * sectorAngle, sectorAngle);
+            }
+
+            var centerX = badgeBounds.Left + badgeBounds.Width / 2F;
+            var centerY = badgeBounds.Top + badgeBounds.Height / 2F;
+            var radius = badgeBounds.Width / 2F;
+            for (var sector = 0; sector < sectorCount; sector++)
+            {
+                var angle = (-90F + sector * sectorAngle) * Math.PI / 180D;
+                graphics.DrawLine(separatorPen, centerX, centerY,
+                    centerX + (float)(Math.Cos(angle) * radius),
+                    centerY + (float)(Math.Sin(angle) * radius));
+            }
+
             graphics.DrawEllipse(borderPen, badgeBounds);
         }
 
         graphics.SmoothingMode = previousSmoothingMode;
-
-        var number = StatusRanks.TryGetValue(status, out var mappedNumber) ? mappedNumber.ToString() : "?";
-        var textColor = IsDarkColor(badgeColor) ? Color.White : Color.Black;
-        using var badgeFont = new Font(_entriesListView.Font.FontFamily, 9F, FontStyle.Bold, GraphicsUnit.Point);
-        TextRenderer.DrawText(
-            graphics,
-            number,
-            badgeFont,
-            badgeBounds,
-            textColor,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
     }
 
     private void DrawPriorityIndicator(Graphics graphics, Rectangle bounds, string priority)
@@ -3472,11 +3488,6 @@ public sealed class DailyTrackingForm : Form
             bounds,
             indicatorColor,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-    }
-
-    private static bool IsDarkColor(Color color)
-    {
-        return ((color.R * 299) + (color.G * 587) + (color.B * 114)) / 1000 < 145;
     }
 
     private void EntriesListView_Resize(object? sender, EventArgs e)

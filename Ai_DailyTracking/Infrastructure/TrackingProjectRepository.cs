@@ -102,7 +102,7 @@ public sealed class TrackingProjectRepository
         return string.IsNullOrWhiteSpace(preferences.ProjectsFolderPath)
             ? AppStoragePaths.ProjectsDirectory
             : _sharedPathService.Resolve(preferences.ProjectsFolderPath, directory: true)
-              ?? throw new DirectoryNotFoundException("Configura la raíz local de SharePoint antes de abrir los proyectos.");
+              ?? throw new DirectoryNotFoundException("La carpeta de proyectos no se puede localizar en este equipo.");
     }
 
     // Only switches which folder is read from/written to; does not copy or move any project files.
@@ -117,6 +117,8 @@ public sealed class TrackingProjectRepository
             .Take(9)];
         _preferencesRepository.Save(preferences);
     }
+
+    public string? GetStoredProjectsFolderPath() => _preferencesRepository.Load().ProjectsFolderPath;
 
     public IReadOnlyList<string> GetRecentProjectsFolderPaths()
     {

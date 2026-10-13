@@ -15,6 +15,7 @@ Aplicacion de escritorio (WinForms, .NET 8) para el seguimiento diario de tareas
 - "Crear Informe": ventana con hasta 3 filtros por campo combinables (AND), filtro por rango de fechas, grafico de barras y exportacion a PDF (tamano A3).
 - Grafico dedicado (`TrackingChartForm`) de entradas acumuladas por dia, agrupado por el campo que se elija.
 - Exportacion de una ficha concreta a Markdown y vinculo opcional a una "Carpeta Documentacion" por entrada.
+- Rutas compartidas adaptadas al perfil de Windows actual; si no existe el destino, se puede localizar desde una carpeta raíz y recordar la correspondencia en ese PC.
 - Copia de seguridad automatica del proyecto activo al cerrar la aplicacion.
 
 ## Persistencia (configuración y JSON de trabajo en `%AppData%`)

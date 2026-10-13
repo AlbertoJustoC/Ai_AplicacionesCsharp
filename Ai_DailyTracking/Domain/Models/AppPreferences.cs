@@ -13,6 +13,9 @@ public sealed class AppPreferences
     // Local sync location for the shared SharePoint document library.
     public string? SharePointLibraryRootPath { get; set; }
 
+    // Local only: equivalent folders for path segments saved by another PC.
+    public Dictionary<string, string>? SharedPathMappings { get; set; }
+
     // Last folder used to create/update the per-entry Markdown file.
     public string? LastMarkdownFolderPath { get; set; }
 }

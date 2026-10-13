@@ -506,7 +506,7 @@ public sealed class ProjectChangeStore
         var seen = new Dictionary<Guid, string>();
         foreach (var path in Directory.GetFiles(directory, "*.json"))
         {
-            var raw = File.ReadAllText(path);
+            var raw = ReadSyncedChange(path);
             var batch = _json.Deserialize<ProjectChangeBatch?>(raw, null)
                 ?? throw new InvalidDataException($"Cambio vacío: {path}");
             if (batch.ProjectId != projectId || batch.BatchId == Guid.Empty || batch.Changes is null ||
@@ -525,6 +525,35 @@ public sealed class ProjectChangeStore
             batches.Add(batch);
         }
         return batches;
+    }
+
+    private static string ReadSyncedChange(string path)
+    {
+        const int attempts = 3;
+        for (var attempt = 1; attempt <= attempts; attempt++)
+        {
+            try
+            {
+                return File.ReadAllText(path);
+            }
+            catch (IOException ex) when (ex.HResult == unchecked((int)0x8007017C) ||
+                                         ex.HResult == unchecked((int)0x8007016A))
+            {
+                if (attempt < attempts)
+                {
+                    System.Threading.Thread.Sleep(500);
+                    continue;
+                }
+
+                throw new IOException(
+                    $"OneDrive no permite leer este archivo de cambios: {path}{Environment.NewLine}{Environment.NewLine}" +
+                    "Abre la carpeta en el Explorador y marca .AiDailyTrackingChanges como 'Mantener siempre en este dispositivo'. " +
+                    "Espera a que termine la sincronización y vuelve a abrir el proyecto. " +
+                    "La aplicación no omite este archivo porque contiene cambios de otro usuario.", ex);
+            }
+        }
+
+        throw new InvalidOperationException("No se pudo completar la lectura del cambio sincronizado.");
     }
 
     private void WriteBatch(string folder, Guid projectId, List<ProjectChange> changes)
