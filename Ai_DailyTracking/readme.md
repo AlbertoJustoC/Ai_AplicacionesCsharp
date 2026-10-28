@@ -10,9 +10,9 @@ Aplicacion de escritorio (WinForms, .NET 8) para el seguimiento diario de tareas
 ## Que hace hoy
 - Abre automaticamente el ultimo proyecto usado; si no existe ninguno, pide crear uno nuevo.
 - Formulario de ficha diaria generado desde el esquema (texto, listas, fechas, texto largo con tamano ajustable).
-- Historico de entradas con columnas ID/Fecha/Disciplina/Area/Paquete/Estado, ordenable.
+- Historico de entradas con columnas ID/Modificado (fecha de "Ultimo cambio")/Disciplina/Area/Paquete/Estado, ordenable.
 - Gestion de proyectos: crear, eliminar, elegir "carpeta de proyectos" compartida (para que varias personas lean/escriban desde la misma ruta de red) y ver/editar los usuarios del proyecto.
-- "Crear Informe": ventana con hasta 3 filtros por campo combinables (AND), filtro por rango de fechas, grafico de barras y exportacion a PDF (tamano A3).
+- "Crear Informe": ventana con hasta 3 filtros por campo combinables (AND), filtro por rango de fechas, grafico de barras y exportacion a PDF (tamano A3, con grafico acumulado y linea de tiempo al final).
 - Grafico dedicado (`TrackingChartForm`) de entradas acumuladas por dia, agrupado por el campo que se elija.
 - Exportacion de una ficha concreta a Markdown y vinculo opcional a una "Carpeta Documentacion" por entrada.
 - Rutas compartidas adaptadas al perfil de Windows actual; si no existe el destino, se puede localizar desde una carpeta raíz y recordar la correspondencia en ese PC.

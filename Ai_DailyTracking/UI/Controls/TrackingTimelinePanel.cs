@@ -12,17 +12,23 @@ public sealed class TrackingTimelinePanel : Panel
     private const int PlotLeft = 112;
     private const int PlotTop = 100;
     private const int RowHeight = 38;
-    private const int DayWidth = 78;
-    private const int DayInset = 7;
-    private const int ActiveWidth = DayWidth - 2 * DayInset;
+    private const float NaturalDayWidth = 78F;
+    // Narrowest day column used when printing; below this the weekly date labels would overlap.
+    private const float MinPrintDayWidth = 10F;
     private IReadOnlyList<TrackingTimelineRow> _rows = [];
     private readonly List<RowLayout> _layouts = [];
     private TrackingFieldDefinition? _statusField;
     private DateTime _axisStart;
     private DateTime _axisEnd;
+    private float _dayWidth = NaturalDayWidth;
     private string _message = "Sin datos para los filtros seleccionados.";
     private readonly ToolTip _toolTip = new() { AutoPopDelay = 30000, InitialDelay = 250, ReshowDelay = 100 };
     private string? _hoverKey;
+
+    // The 7 px inset (of a 78 px day) keeps the same proportion when the day column is narrowed for printing.
+    private float DayInset => _dayWidth * 7F / NaturalDayWidth;
+
+    private float ActiveWidth => _dayWidth - (2 * DayInset);
 
     public TrackingTimelinePanel()
     {
@@ -40,14 +46,22 @@ public sealed class TrackingTimelinePanel : Panel
         _toolTip.Hide(this);
         _hoverKey = null;
 
-        if (rows.Count > 0)
+        ApplyLayout(NaturalDayWidth);
+        Invalidate();
+    }
+
+    private void ApplyLayout(float dayWidth)
+    {
+        _dayWidth = dayWidth;
+
+        if (_rows.Count > 0)
         {
-            var firstDate = rows.SelectMany(row => row.Notes.Select(note => note.Timestamp.Date).Append(row.Start.Date)).Min();
+            var firstDate = _rows.SelectMany(row => row.Notes.Select(note => note.Timestamp.Date).Append(row.Start.Date)).Min();
             _axisStart = firstDate.AddDays(-((int)firstDate.DayOfWeek + 6) % 7);
-            _axisEnd = rows.SelectMany(row => row.Notes.Select(note => note.Timestamp.Date).Append(row.End.Date)).Max();
+            _axisEnd = _rows.SelectMany(row => row.Notes.Select(note => note.Timestamp.Date).Append(row.End.Date)).Max();
             _layouts.Clear();
             var top = PlotTop;
-            foreach (var row in rows)
+            foreach (var row in _rows)
             {
                 var markers = BuildMarkers(row);
                 var laneCount = markers.Count == 0 ? 1 : markers.Max(marker => marker.Lane) + 1;
@@ -56,24 +70,64 @@ public sealed class TrackingTimelinePanel : Panel
                 top += height;
             }
             var days = (_axisEnd - _axisStart).Days + 1;
-            AutoScrollMinSize = new Size(PlotLeft + days * DayWidth + 30, top + 44);
+            AutoScrollMinSize = new Size((int)Math.Ceiling(PlotLeft + days * _dayWidth + 30), top + 44);
         }
         else
         {
             _layouts.Clear();
             AutoScrollMinSize = Size.Empty;
         }
-
-        Invalidate();
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        var g = e.Graphics;
+        e.Graphics.TranslateTransform(AutoScrollPosition.X, AutoScrollPosition.Y);
+        PaintContent(e.Graphics);
+    }
+
+    // Renders the whole timeline (not just the visible scrolled area) to a bitmap meant to be printed on a fitWidth x fitHeight area (at 96 dpi).
+    // Instead of just shrinking it, the day columns are narrowed first so a long date range stays readable; it is only scaled down
+    // when the rows alone do not fit. The bitmap has pixelDensity times more pixels than that area for sharper printing.
+    public Bitmap? RenderToBitmap(int fitWidth, int fitHeight, float pixelDensity)
+    {
+        if (_rows.Count == 0)
+        {
+            return null;
+        }
+
+        var days = (_axisEnd - _axisStart).Days + 1;
+        var scale = 1F;
+
+        // The row heights depend on the day width (note markers overlap on narrow days), so settle both over a few passes.
+        for (var pass = 0; pass < 3; pass++)
+        {
+            ApplyLayout(Math.Clamp(((fitWidth / scale) - PlotLeft - 30) / days, MinPrintDayWidth, NaturalDayWidth));
+            scale = Math.Min(1F, fitHeight / (float)AutoScrollMinSize.Height);
+        }
+
+        var content = AutoScrollMinSize;
+        scale = Math.Min(scale, fitWidth / (float)content.Width);
+        var drawScale = scale * pixelDensity;
+        var bitmap = new Bitmap(Math.Max(1, (int)Math.Ceiling(content.Width * drawScale)), Math.Max(1, (int)Math.Ceiling(content.Height * drawScale)));
+
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            graphics.Clear(BackColor);
+            graphics.ScaleTransform(drawScale, drawScale);
+            PaintContent(graphics);
+        }
+
+        // Set after drawing: the graphics would otherwise scale the font sizes by this dpi as well.
+        bitmap.SetResolution(96F * pixelDensity, 96F * pixelDensity);
+        ApplyLayout(NaturalDayWidth);
+        return bitmap;
+    }
+
+    private void PaintContent(Graphics g)
+    {
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-        g.TranslateTransform(AutoScrollPosition.X, AutoScrollPosition.Y);
 
         using var titleFont = new Font("Segoe UI Semibold", 12F, FontStyle.Bold);
         using var labelFont = new Font("Segoe UI", 8.5F);
@@ -204,7 +258,7 @@ public sealed class TrackingTimelinePanel : Panel
     }
 
     private float Map(DateTime date) =>
-        PlotLeft + (float)(date.Date - _axisStart).TotalDays * DayWidth + DayInset
+        PlotLeft + (float)(date.Date - _axisStart).TotalDays * _dayWidth + DayInset
         + (float)TrackingTimelineBuilder.DayFraction(date) * ActiveWidth;
 
     private List<NoteMarker> BuildMarkers(TrackingTimelineRow row)

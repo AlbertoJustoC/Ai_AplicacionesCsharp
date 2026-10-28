@@ -244,9 +244,22 @@ public sealed class TrackingReportForm : Form
         _resultsGrid.ShowCellToolTips = true;
         _resultsGrid.CellToolTipTextNeeded += ResultsGrid_CellToolTipTextNeeded;
         _resultsGrid.CellPainting += ResultsGrid_CellPainting;
+        _resultsGrid.SortCompare += ResultsGrid_SortCompare;
 
         card.Controls.Add(_resultsGrid);
         return card;
+    }
+
+    // Date cells normally hold DateTime values; this keeps sorting safe if a stored date could not be parsed (it is then kept as text).
+    private void ResultsGrid_SortCompare(object? sender, DataGridViewSortCompareEventArgs e)
+    {
+        if (e.CellValue1 is not DateTime && e.CellValue2 is not DateTime)
+        {
+            return;
+        }
+
+        e.SortResult = (e.CellValue1 as DateTime? ?? DateTime.MinValue).CompareTo(e.CellValue2 as DateTime? ?? DateTime.MinValue);
+        e.Handled = true;
     }
 
     // Shows the full cell text as a tooltip only when the column is too narrow to display it.
@@ -388,8 +401,14 @@ public sealed class TrackingReportForm : Form
 
         foreach (var field in _schema.Fields)
         {
-            _resultsGrid.Columns.Add(field.Key, field.Label);
-            _resultsGrid.Columns[field.Key].Width = 140;
+            var column = _resultsGrid.Columns[_resultsGrid.Columns.Add(field.Key, field.Label)];
+            column.Width = 140;
+
+            // Date cells hold real DateTime values (shown as dd/MM/yyyy) so sorting by this column is chronological, not alphabetical.
+            if (field.Type == TrackingFieldType.Date)
+            {
+                column.DefaultCellStyle.Format = "dd/MM/yyyy";
+            }
         }
     }
 
@@ -451,10 +470,49 @@ public sealed class TrackingReportForm : Form
         var selectedOptionValues = GetOptionMenuItems(primaryFilter).Where(item => item.Checked).Select(item => item.Text ?? string.Empty).ToList();
         var (chartDates, chartSeries) = TrackingChartSeriesBuilder.Build(_matchingEntries, _dateField, primaryField, selectedOptionValues);
 
-        using var chartBitmap = RenderChartBitmap($"{primaryField.Label}: registros acumulados por dia", chartDates, chartSeries);
+        var chartPages = new List<ReportChartPage>();
 
-        var exporter = new TrackingReportPdfExporter();
-        exporter.TryExport(this, _project.ProjectName, _schema, _matchingEntries, chartBitmap);
+        try
+        {
+            var accumulatedBitmap = RenderChartBitmap($"{primaryField.Label}: registros acumulados por dia", chartDates, chartSeries);
+
+            if (accumulatedBitmap is not null)
+            {
+                chartPages.Add(new ReportChartPage("Gráfico acumulado", accumulatedBitmap));
+            }
+
+            var timelineBitmap = RenderTimelineBitmap();
+
+            if (timelineBitmap is not null)
+            {
+                chartPages.Add(new ReportChartPage("Línea de tiempo", timelineBitmap));
+            }
+
+            var exporter = new TrackingReportPdfExporter();
+            exporter.TryExport(this, _project.ProjectName, _schema, _matchingEntries, chartPages);
+        }
+        finally
+        {
+            foreach (var chartPage in chartPages)
+            {
+                chartPage.Image.Dispose();
+            }
+        }
+    }
+
+    // Same timeline as TrackingChartForm ("Ver líneas de tiempo") for the entries matching the current filters, drawn on a single bitmap
+    // sized for one A3 landscape page (about 1390 x 860 px at 96 dpi, drawn with 2.5x the pixels for sharper printing).
+    private Bitmap? RenderTimelineBitmap()
+    {
+        if (_dateField is null || _matchingEntries.Count == 0)
+        {
+            return null;
+        }
+
+        using var timelinePanel = new TrackingTimelinePanel { Size = new Size(1200, 800) };
+        timelinePanel.CreateControl();
+        timelinePanel.SetData(TrackingTimelineBuilder.Build(_matchingEntries, _schema, _dateField.Key), _statusField);
+        return timelinePanel.RenderToBitmap(1390, 860, 2.5F);
     }
 
     private static Bitmap? RenderChartBitmap(string title, IReadOnlyList<DateTime> dates, IReadOnlyList<(string Label, IReadOnlyList<int> Counts)> series)
@@ -485,11 +543,24 @@ public sealed class TrackingReportForm : Form
 
             foreach (var field in _schema.Fields)
             {
-                row.Cells[field.Key].Value = GetFormattedFieldValue(entry, field);
+                row.Cells[field.Key].Value = field.Type == TrackingFieldType.Date
+                    ? TryParseDateValue(entry, field)
+                    : GetFormattedFieldValue(entry, field);
             }
         }
 
         _resultsGrid.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.DisplayedCells);
+    }
+
+    // Returns the date as DateTime when it parses; otherwise the raw text (or null when empty) so nothing is lost.
+    private static object? TryParseDateValue(TrackingEntry entry, TrackingFieldDefinition field)
+    {
+        if (!entry.Values.TryGetValue(field.Key, out var rawValue) || string.IsNullOrWhiteSpace(rawValue))
+        {
+            return null;
+        }
+
+        return DateTime.TryParse(rawValue, out var parsedDate) ? parsedDate.Date : rawValue;
     }
 
     private static string GetFormattedFieldValue(TrackingEntry entry, TrackingFieldDefinition field)

@@ -423,7 +423,7 @@ public sealed class DailyTrackingForm : Form
         _entriesListView.Columns.Add(string.Empty, 36).TextAlign = HorizontalAlignment.Center;
         _entriesListView.Columns.Add(string.Empty, 30).TextAlign = HorizontalAlignment.Center;
         _entriesListView.Columns.Add("ID", 50);
-        _entriesListView.Columns.Add("Fecha", 95);
+        _entriesListView.Columns.Add("Modificado", 95);
         _entriesListView.Columns.Add("Disciplina", 130);
         _entriesListView.Columns.Add("Area", 130);
         _entriesListView.Columns.Add("Paquete", 130);
@@ -2568,7 +2568,7 @@ public sealed class DailyTrackingForm : Form
             };
             listItem.SubItems.Add(GetFieldValue(entry, PriorityFieldKey) ?? string.Empty);
             listItem.SubItems.Add(entry.EntryNumber.ToString());
-            listItem.SubItems.Add(GetEntryDate(entry));
+            listItem.SubItems.Add(GetEntryModifiedDate(entry));
             listItem.SubItems.Add(GetFieldValue(entry, "discipline") ?? "-");
             listItem.SubItems.Add(GetFieldValue(entry, "area") ?? "-");
             listItem.SubItems.Add(GetFieldValue(entry, "package") ?? "-");
@@ -2616,7 +2616,7 @@ public sealed class DailyTrackingForm : Form
             0 => SortEntriesByRank(entries, StatusFieldKey, StatusRanks, descending),
             1 => SortEntriesByRank(entries, PriorityFieldKey, PriorityRanks, descending),
             2 => descending ? entries.OrderByDescending(entry => entry.EntryNumber) : entries.OrderBy(entry => entry.EntryNumber),
-            3 => descending ? entries.OrderByDescending(GetSortableDate) : entries.OrderBy(GetSortableDate),
+            3 => descending ? entries.OrderByDescending(GetSortableModifiedDate) : entries.OrderBy(GetSortableModifiedDate),
             4 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "discipline") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "discipline") ?? string.Empty),
             5 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "area") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "area") ?? string.Empty),
             6 => descending ? entries.OrderByDescending(entry => GetFieldValue(entry, "package") ?? string.Empty) : entries.OrderBy(entry => GetFieldValue(entry, "package") ?? string.Empty),
@@ -2647,10 +2647,11 @@ public sealed class DailyTrackingForm : Form
                 .Select(item => item.Entry);
     }
 
-    private DateTime GetSortableDate(TrackingEntry entry)
+    // "Modificado" column: the "Ultimo cambio" field (updatedDate), falling back to the last saved timestamp when it is empty.
+    private static DateTime GetSortableModifiedDate(TrackingEntry entry)
     {
-        var storedDate = GetFieldValue(entry, "recordDate", "date", "fecha");
-        return DateTime.TryParse(storedDate, out var parsedDate) ? parsedDate : entry.UpdatedAtLocal;
+        var storedDate = GetFieldValue(entry, UpdatedDateFieldKey);
+        return DateTime.TryParse(storedDate, out var parsedDate) ? parsedDate.Date : entry.UpdatedAtLocal.Date;
     }
 
     private void SelectCurrentEntryInList()
@@ -2673,16 +2674,9 @@ public sealed class DailyTrackingForm : Form
         _suppressEvents = previousSuppressState;
     }
 
-    private string GetEntryDate(TrackingEntry entry)
+    private static string GetEntryModifiedDate(TrackingEntry entry)
     {
-        var storedDate = GetFieldValue(entry, "recordDate", "date", "fecha");
-
-        if (DateTime.TryParse(storedDate, out var parsedDate))
-        {
-            return parsedDate.ToString("dd/MM/yyyy");
-        }
-
-        return entry.UpdatedAtLocal.ToString("dd/MM/yyyy");
+        return GetSortableModifiedDate(entry).ToString("dd/MM/yyyy");
     }
 
     private static string? GetFieldValue(TrackingEntry entry, params string[] keys)

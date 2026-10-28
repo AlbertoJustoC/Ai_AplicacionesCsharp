@@ -55,7 +55,7 @@ Ai_DailyTracking\bin\Release\net8.0-windows\Ai_DailyTracking.exe
 - "Guardado localmente" confirma la escritura en este PC, no que OneDrive haya terminado de sincronizar. Los cambios que lleguen más tarde se incorporarán en la siguiente fusión.
 
 ### Consultar el historico
-- La lista de la izquierda/abajo muestra ID, Fecha, Disciplina, Area, Paquete y Estado de todas las entradas del proyecto.
+- La lista de la izquierda/abajo muestra ID, Modificado (fecha de "Ultimo cambio"), Disciplina, Area, Paquete y Estado de todas las entradas del proyecto.
 - Haz clic en las cabeceras de columna para ordenar.
 
 ### Cambiar de proyecto o crear uno nuevo
@@ -76,8 +76,8 @@ Las rutas guardadas bajo `C:\Users\<usuario>` se adaptan automáticamente al per
 ### Crear un informe en PDF
 1. Abre "Crear Informe".
 2. Configura hasta 3 filtros por campo (se combinan con Y logico) y, si quieres, un rango de fechas.
-3. Revisa la tabla de resultados y el resumen.
-4. Pulsa "Crear PDF (A3)" para generar el informe con grafico incluido.
+3. Revisa la tabla de resultados y el resumen. Puedes ordenar por cualquier columna; la columna Fecha se ordena cronologicamente.
+4. Pulsa "Crear PDF (A3)" para generar el informe. Cada registro aparece en una fila con fondo gris claro (sin la columna Actividad; Area y Paquete son mas anchas) y debajo, tabuladas y con una linea vertical a la izquierda, su linea "Actividad: ..." (siempre presente, ajustada a varias lineas si es larga) y sus notas, una por linea y con los mismos colores que en la ficha. Al final se incluyen, cada uno en su propia hoja apaisada, el grafico acumulado y la linea de tiempo de los registros filtrados (la linea de tiempo siempre en una sola hoja; con muchos registros el texto sale pequeno y conviene ampliar el PDF).
 
 ### Ver el grafico de evolucion
 - Abre el grafico de seguimiento para ver las entradas acumuladas por dia, agrupadas por el campo que elijas (por ejemplo, Estado o Disciplina).

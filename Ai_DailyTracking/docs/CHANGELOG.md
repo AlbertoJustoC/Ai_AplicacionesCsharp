@@ -2,6 +2,20 @@
 
 Historial resumido de cambios tecnicos importantes. No sustituye al historial de control de versiones (git log); su objetivo es dar contexto rapido de la evolucion del proyecto.
 
+## 2026-10-28 (3)
+- PDF de "Crear informe": ahora incluye dos paginas finales apaisadas, el grafico acumulado y la linea de tiempo (la de "Ver lineas de tiempo" de `TrackingChartForm`, con los registros filtrados), cada una en una sola hoja A3. `TrackingReportPdfExporter.TryExport` recibe una lista de `ReportChartPage` en lugar de un unico `Bitmap`.
+- La pagina del grafico salia en vertical con PDFCreator (la impresora PDF decide la orientacion de cada pagina segun su texto y esa pagina solo tenia una imagen). Ahora cada pagina de grafico lleva una cabecera con texto real ("Informe de seguimiento - proyecto" + titulo del grafico). No se ha podido comprobar con PDFCreator desde el entorno de desarrollo; si siguiera saliendo en vertical, revisar la opcion de rotacion automatica de paginas del perfil PDF de PDFCreator.
+- `TrackingTimelinePanel`: se separo el pintado a `PaintContent` y se agrego `RenderToBitmap`, que dibuja toda la linea de tiempo (no solo la zona visible) en un bitmap ajustado a una hoja: estrecha las columnas de dia (minimo 10 px) y solo reduce la escala si las filas no caben; el bitmap lleva 2,5 veces mas pixeles. El ancho de dia pasa de constante a campo (`_dayWidth`, 78 px en pantalla); el comportamiento en pantalla no cambia.
+
+## 2026-10-28 (2)
+- Historico (`DailyTrackingForm`): la columna "Fecha" pasa a "Modificado" y muestra la fecha del campo "Ultimo cambio" (`updatedDate`; si esta vacio, la del ultimo guardado `UpdatedAtLocal`). La ordenacion por esa columna usa la misma fecha. Se sustituyeron `GetEntryDate`/`GetSortableDate` por `GetEntryModifiedDate`/`GetSortableModifiedDate`.
+- `TrackingReportPdfExporter`: la fila de cada registro tiene fondo gris claro; se quita la columna "Actividad" y su ancho se reparte entre "Area" y "Paquete" (cada una pasa a 1,5 veces el ancho anterior; las demas columnas no cambian). Debajo de cada fila se imprime siempre "Actividad: ..." (con ajuste a varias lineas y respetando saltos de linea), con la misma sangria y linea vertical que las notas, y a continuacion las notas. `LayoutNotes` pasa a `LayoutDetailLines` (actividad + notas) y la actividad forma parte del bloque que se mantiene junto en la misma pagina.
+
+## 2026-10-28
+- `TrackingReportForm`: las columnas de tipo fecha de la tabla de "Crear informe" guardan ahora un `DateTime` en la celda (mostrado con formato `dd/MM/yyyy`) en vez de texto, por lo que al ordenar por la columna Fecha el orden es cronologico y no alfabetico (antes `02/10/26` salia antes que `15/09/26`). Se agrego un manejador `SortCompare` para que el orden siga siendo seguro si alguna fecha guardada no se pudiera interpretar (se conserva como texto).
+- `TrackingReportPdfExporter`: el PDF imprime las notas de cada tarea debajo de su fila, tabuladas (alineadas con la primera columna de campos, con una linea vertical gris a la izquierda), una nota por linea y ajustando a varias lineas las notas largas. Se mantienen los colores de la ficha: marca de fecha `[yyyy-MM-dd HH:mm]` en rojo y estado `**Estado**` en negrita con el color de su opcion (sin los asteriscos; si el estado no es una opcion conocida se imprime en negro). La columna "Notas" ya no se imprime como columna de la tabla. Las tareas sin notas no imprimen nada debajo. Una fila con sus notas se mantiene junta en la misma pagina; si las notas ocupan mas que una pagina, continuan en la siguiente.
+- Nuevo helper `Shared/Helpers/NoteLineParser.cs`: divide el campo `notes` en lineas y cada linea en tramos (texto, marca de fecha, estado), con las mismas reglas que el resaltado de la ficha.
+
 ## 2026-09-14
 - Se dividio la zona bajo Actividad en dos mitades (50/50): izquierda para ruta de input recibido + boton "input recibido", y derecha para ruta+archivo Markdown + boton "Crear/modificar MD".
 - Las rutas en ambas mitades ahora se alinean a la derecha y se recortan por el inicio para priorizar mostrar el final (carpeta/archivo).
