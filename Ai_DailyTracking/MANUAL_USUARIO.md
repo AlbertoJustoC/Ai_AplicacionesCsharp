@@ -76,7 +76,7 @@ Las rutas guardadas bajo `C:\Users\<usuario>` se adaptan automáticamente al per
 ### Crear un informe en PDF
 1. Abre "Crear Informe".
 2. Configura hasta 3 filtros por campo (se combinan con Y logico) y, si quieres, un rango de fechas.
-3. Revisa la tabla de resultados y el resumen. Puedes ordenar por cualquier columna; la columna Fecha se ordena cronologicamente.
+3. Revisa la tabla de resultados y el resumen. Puedes ordenar por cualquier columna; la columna Fecha se ordena cronologicamente. El PDF conserva el orden visible de los registros en el momento de pulsar "Crear PDF (A3)", tanto ascendente como descendente.
 4. Pulsa "Crear PDF (A3)" para generar el informe. Cada registro aparece en una fila con fondo gris claro (sin la columna Actividad; Area y Paquete son mas anchas) y debajo, tabuladas y con una linea vertical a la izquierda, su linea "Actividad: ..." (siempre presente, ajustada a varias lineas si es larga) y sus notas, una por linea y con los mismos colores que en la ficha. Al final se incluyen, cada uno en su propia hoja apaisada, el grafico acumulado y la linea de tiempo de los registros filtrados (la linea de tiempo siempre en una sola hoja; con muchos registros el texto sale pequeno y conviene ampliar el PDF).
 
 ### Ver el grafico de evolucion

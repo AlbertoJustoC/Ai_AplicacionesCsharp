@@ -489,7 +489,10 @@ public sealed class TrackingReportForm : Form
             }
 
             var exporter = new TrackingReportPdfExporter();
-            exporter.TryExport(this, _project.ProjectName, _schema, _matchingEntries, chartPages);
+            var orderedEntries = _resultsGrid.Rows.Cast<DataGridViewRow>()
+                .Select(row => (TrackingEntry)row.Tag!)
+                .ToList();
+            exporter.TryExport(this, _project.ProjectName, _schema, orderedEntries, chartPages);
         }
         finally
         {
@@ -539,6 +542,7 @@ public sealed class TrackingReportForm : Form
         {
             var rowIndex = _resultsGrid.Rows.Add();
             var row = _resultsGrid.Rows[rowIndex];
+            row.Tag = entry;
             row.Cells["EntryNumber"].Value = entry.EntryNumber;
 
             foreach (var field in _schema.Fields)
