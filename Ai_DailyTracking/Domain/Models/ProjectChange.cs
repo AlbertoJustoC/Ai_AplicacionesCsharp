@@ -21,6 +21,8 @@ public sealed class ProjectChange
     public List<Guid> ObservedEntryChanges { get; set; } = [];
     public List<ProjectFieldChange> Fields { get; set; } = [];
     public List<ProjectNoteLine> Notes { get; set; } = [];
+    // Notes deleted (or replaced by an edited version) by this change. Absent in files from older versions.
+    public List<Guid> RemovedNoteIds { get; set; } = [];
 }
 
 public sealed class ProjectFieldChange
@@ -37,6 +39,8 @@ public sealed class ProjectNoteLine
     public DateTimeOffset SavedAtUtc { get; set; }
     public string Author { get; set; } = string.Empty;
     public string Text { get; set; } = string.Empty;
+    // Set when this line is an edited version of another note; it then keeps that note's position in the list.
+    public Guid? ReplacesNoteId { get; set; }
 }
 
 public sealed record ProjectFieldCandidate(Guid ChangeId, string? Value, string Author, string Machine, DateTimeOffset SavedAtUtc);

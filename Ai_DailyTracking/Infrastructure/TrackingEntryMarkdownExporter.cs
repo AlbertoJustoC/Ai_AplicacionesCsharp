@@ -1,4 +1,5 @@
 using Ai_DailyTracking.Domain.Models;
+using Ai_DailyTracking.Shared.Helpers;
 using System.Text;
 
 namespace Ai_DailyTracking.Infrastructure;
@@ -7,6 +8,7 @@ public sealed class TrackingEntryMarkdownExporter
 {
     private const string ActivitySectionHeader = "## Actividad";
     private const string NotesSectionHeader = "## Notas";
+    private const string NotesFieldKey = "notes";
 
     private static readonly (string PropertyName, string FieldKey)[] FrontmatterMapping =
     [
@@ -23,7 +25,41 @@ public sealed class TrackingEntryMarkdownExporter
         ("Cambio Estado", "updatedDate")
     ];
 
+    private readonly NotesSyncStateStore? _syncStateStore;
+    // Bases computed when pulling the markdown into a ficha. They only become the stored base once the ficha
+    // has been saved (CommitPendingNotesBases); otherwise a discarded ficha would disagree with its own base.
+    private readonly Dictionary<string, PendingBase> _pendingBases = new(StringComparer.OrdinalIgnoreCase);
+
+    // Without a state store there is no record of the last synchronized notes, so every sync behaves like the
+    // first one: notes only present on one side are added to the other and nothing is deleted.
+    public TrackingEntryMarkdownExporter(NotesSyncStateStore? syncStateStore = null)
+    {
+        _syncStateStore = syncStateStore;
+    }
+
+    public void CommitPendingNotesBases()
+    {
+        foreach (var pending in _pendingBases.Values)
+        {
+            _syncStateStore?.Save(pending.EntryId, pending.MarkdownFilePath, pending.Lines);
+        }
+
+        _pendingBases.Clear();
+    }
+
+    public void DiscardPendingNotesBases()
+    {
+        _pendingBases.Clear();
+    }
+
     public bool TryCreateOrUpdate(string markdownFilePath, string templatePath, TrackingEntry entry, out string synchronizedNotesText, out string? errorMessage)
+    {
+        return TryCreateOrUpdate(markdownFilePath, templatePath, entry, null, out synchronizedNotesText, out errorMessage);
+    }
+
+    // notesModifiedAtUtc is when the ficha notes were last edited; it decides who wins when the ficha and the
+    // Markdown changed the same note since the last synchronization (the most recent update prevails).
+    public bool TryCreateOrUpdate(string markdownFilePath, string templatePath, TrackingEntry entry, DateTimeOffset? notesModifiedAtUtc, out string synchronizedNotesText, out string? errorMessage)
     {
         errorMessage = null;
         synchronizedNotesText = string.Empty;
@@ -31,14 +67,15 @@ public sealed class TrackingEntryMarkdownExporter
         try
         {
             var frontmatterValues = BuildFrontmatterValues(entry);
-            var incomingNotes = ReadEntryValue(entry, "notes");
+            var incomingNotes = ReadEntryValue(entry, NotesFieldKey);
             string markdownContent;
 
             if (File.Exists(markdownFilePath))
             {
                 var existingContent = File.ReadAllText(markdownFilePath);
                 var frontmatterUpdated = UpdateFrontmatter(existingContent, frontmatterValues);
-                markdownContent = SyncNotesSection(frontmatterUpdated, incomingNotes, out synchronizedNotesText);
+                var markdownWins = IsMarkdownMoreRecent(markdownFilePath, entry, notesModifiedAtUtc);
+                markdownContent = SyncNotesSection(frontmatterUpdated, incomingNotes, entry.EntryId, markdownFilePath, markdownWins, out synchronizedNotesText);
             }
             else
             {
@@ -61,14 +98,105 @@ public sealed class TrackingEntryMarkdownExporter
             }
 
             File.WriteAllText(markdownFilePath, markdownContent, new UTF8Encoding(false));
+
+            // Ficha and markdown now hold exactly the same notes.
+            _pendingBases.Remove(PendingKey(entry.EntryId, markdownFilePath));
+            _syncStateStore?.Save(entry.EntryId, markdownFilePath, NoteLinesMerge.ToLines(synchronizedNotesText));
             return true;
         }
         catch (Exception exception)
         {
-            synchronizedNotesText = NormalizeForEditor(ReadEntryValue(entry, "notes"));
+            synchronizedNotesText = NormalizeForEditor(ReadEntryValue(entry, NotesFieldKey));
             errorMessage = exception.Message;
             return false;
         }
+    }
+
+    // Reads "## Notas" from an existing Markdown file and merges what changed there (edited/deleted/new notes)
+    // into the ficha notes without writing the file. Returns true only when the ficha notes must change.
+    public bool TryPullNotes(string markdownFilePath, TrackingEntry entry, DateTimeOffset? notesModifiedAtUtc, out string mergedNotesText)
+    {
+        mergedNotesText = string.Empty;
+
+        try
+        {
+            if (!File.Exists(markdownFilePath))
+            {
+                return false;
+            }
+
+            var notesBody = ReadSectionBody(File.ReadAllText(markdownFilePath), NotesSectionHeader, null);
+
+            if (notesBody is null)
+            {
+                return false;
+            }
+
+            var fichaLines = NoteLinesMerge.ToLines(ReadEntryValue(entry, NotesFieldKey));
+            var markdownLines = NoteLinesMerge.ToLines(notesBody);
+            var baseLines = ResolveBaseLines(entry.EntryId, markdownFilePath, fichaLines, markdownLines);
+            var markdownWins = IsMarkdownMoreRecent(markdownFilePath, entry, notesModifiedAtUtc);
+            var result = MergeNoteLines(baseLines, fichaLines, markdownLines, markdownWins);
+
+            if (_syncStateStore is not null)
+            {
+                _pendingBases[PendingKey(entry.EntryId, markdownFilePath)] = new PendingBase(entry.EntryId, markdownFilePath, result.SyncedLines);
+            }
+
+            if (NoteLinesMerge.HaveSameLines(result.Lines, fichaLines))
+            {
+                return false;
+            }
+
+            mergedNotesText = NormalizeForEditor(SortNotesLinesByTimestamp(string.Join("\n", result.Lines)));
+            return true;
+        }
+        catch (Exception)
+        {
+            // A locked or unreadable file must never block opening the ficha; the next pull retries.
+            return false;
+        }
+    }
+
+    private IReadOnlyList<string> ResolveBaseLines(Guid entryId, string markdownFilePath, IReadOnlyList<string> fichaLines, IReadOnlyList<string> markdownLines)
+    {
+        if (_pendingBases.TryGetValue(PendingKey(entryId, markdownFilePath), out var pending))
+        {
+            return pending.Lines;
+        }
+
+        var storedLines = _syncStateStore?.TryGet(entryId, markdownFilePath);
+
+        if (storedLines is not null)
+        {
+            return storedLines;
+        }
+
+        // No record of a previous sync: only the notes both sides already share are known to be in sync, so a
+        // note present on one side only is treated as new there (never as deleted on the other side).
+        return NoteLinesMerge.Intersect(markdownLines, fichaLines);
+    }
+
+    private static NoteLinesMergeResult MergeNoteLines(IReadOnlyList<string> baseLines, IReadOnlyList<string> fichaLines, IReadOnlyList<string> markdownLines, bool markdownWins)
+    {
+        // An empty "## Notas" is read as "not written yet", not as "the user deleted every note".
+        var effectiveMarkdownLines = markdownLines.Count == 0 && baseLines.Count > 0 ? baseLines : markdownLines;
+        return NoteLinesMerge.Merge(baseLines, fichaLines, effectiveMarkdownLines, markdownWins);
+    }
+
+    private static string PendingKey(Guid entryId, string markdownFilePath)
+    {
+        return entryId.ToString("N") + "|" + Path.GetFullPath(markdownFilePath);
+    }
+
+    private sealed record PendingBase(Guid EntryId, string MarkdownFilePath, IReadOnlyList<string> Lines);
+
+    private static bool IsMarkdownMoreRecent(string markdownFilePath, TrackingEntry entry, DateTimeOffset? notesModifiedAtUtc)
+    {
+        var fichaModifiedAtUtc = notesModifiedAtUtc
+            ?? (entry.FieldModifiedAtUtc.TryGetValue(NotesFieldKey, out var storedValue) ? storedValue : DateTimeOffset.MinValue);
+        var markdownModifiedAtUtc = new DateTimeOffset(File.GetLastWriteTimeUtc(markdownFilePath), TimeSpan.Zero);
+        return markdownModifiedAtUtc > fichaModifiedAtUtc;
     }
 
     private static Dictionary<string, string> BuildFrontmatterValues(TrackingEntry entry)
@@ -196,7 +324,7 @@ public sealed class TrackingEntryMarkdownExporter
         return builder.ToString();
     }
 
-    private static string SyncNotesSection(string markdownContent, string incomingNotesText, out string synchronizedNotesText)
+    private string SyncNotesSection(string markdownContent, string incomingNotesText, Guid entryId, string markdownFilePath, bool markdownWins, out string synchronizedNotesText)
     {
         var normalizedIncoming = NormalizeLineEndings(incomingNotesText).Trim('\n', '\r');
 
@@ -215,8 +343,11 @@ public sealed class TrackingEntryMarkdownExporter
             return ReplaceSectionBody(markdownContent, NotesSectionHeader, null, orderedIncoming);
         }
 
-        var mergedBody = MergeNotesLines(existingNotesBody, normalizedIncoming);
-        var orderedMergedBody = SortNotesLinesByTimestamp(mergedBody);
+        var fichaLines = NoteLinesMerge.ToLines(normalizedIncoming);
+        var markdownLines = NoteLinesMerge.ToLines(existingNotesBody);
+        var baseLines = ResolveBaseLines(entryId, markdownFilePath, fichaLines, markdownLines);
+        var mergedLines = MergeNoteLines(baseLines, fichaLines, markdownLines, markdownWins).Lines;
+        var orderedMergedBody = SortNotesLinesByTimestamp(string.Join("\n", mergedLines));
         synchronizedNotesText = NormalizeForEditor(orderedMergedBody);
         return ReplaceSectionBody(markdownContent, NotesSectionHeader, null, orderedMergedBody);
     }
@@ -255,42 +386,6 @@ public sealed class TrackingEntryMarkdownExporter
         }
 
         return normalized[bodyStart..bodyEnd].Trim('\n', '\r');
-    }
-
-    private static string MergeNotesLines(string existingBody, string incomingBody)
-    {
-        var existingLines = NormalizeLineEndings(existingBody)
-            .Split('\n')
-            .Select(line => line.TrimEnd('\r'))
-            .ToList();
-
-        if (existingLines.Count == 1 && existingLines[0].Length == 0)
-        {
-            existingLines.Clear();
-        }
-
-        var remaining = existingLines.GroupBy(line => line, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
-
-        foreach (var rawIncomingLine in NormalizeLineEndings(incomingBody).Split('\n'))
-        {
-            var incomingLine = rawIncomingLine.TrimEnd('\r');
-
-            if (string.IsNullOrWhiteSpace(incomingLine))
-            {
-                continue;
-            }
-
-            if (remaining.TryGetValue(incomingLine, out var count) && count > 0)
-            {
-                remaining[incomingLine] = count - 1;
-                continue;
-            }
-
-            existingLines.Add(incomingLine);
-        }
-
-        return string.Join("\n", existingLines);
     }
 
     private static string SortNotesLinesByTimestamp(string notesBody)

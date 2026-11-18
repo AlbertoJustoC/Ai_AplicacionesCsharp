@@ -1,5 +1,6 @@
 using Ai_DailyTracking.Domain.Models;
 using Ai_DailyTracking.Shared.Constants;
+using Ai_DailyTracking.Shared.Helpers;
 using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
@@ -238,11 +239,12 @@ public sealed class ProjectChangeStore
             oldEntries.TryGetValue(entry.EntryId, out var oldEntry);
             var oldValues = oldEntry?.Values ?? new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
             var fields = ChangedFields(entry.EntryId, oldValues, entry.Values, editingBase);
-            var notes = AddedNotes(oldValues.GetValueOrDefault("notes"), entry.Values.GetValueOrDefault("notes"), now);
-            if (oldEntry is null || fields.Count > 0 || notes.Count > 0)
+            var (notes, removedNoteIds) = DiffNotes(editingBase.Notes.GetValueOrDefault(entry.EntryId) ?? [],
+                entry.Values.GetValueOrDefault("notes"), now);
+            if (oldEntry is null || fields.Count > 0 || notes.Count > 0 || removedNoteIds.Count > 0)
             {
                 changes.Add(NewChange(edited.ProjectId, entry.EntryId, now, fields, notes,
-                    oldEntry is null ? now : null));
+                    oldEntry is null ? now : null, removedNoteIds));
             }
         }
 
@@ -259,7 +261,8 @@ public sealed class ProjectChangeStore
     }
 
     private static ProjectChange NewChange(Guid projectId, Guid entryId, DateTimeOffset now,
-        List<ProjectFieldChange> fields, List<ProjectNoteLine>? notes = null, DateTimeOffset? createdAt = null) =>
+        List<ProjectFieldChange> fields, List<ProjectNoteLine>? notes = null, DateTimeOffset? createdAt = null,
+        List<Guid>? removedNoteIds = null) =>
         new()
         {
             ProjectId = projectId,
@@ -269,7 +272,8 @@ public sealed class ProjectChangeStore
             Author = Environment.UserName,
             Machine = Environment.MachineName,
             Fields = fields,
-            Notes = notes ?? []
+            Notes = notes ?? [],
+            RemovedNoteIds = removedNoteIds ?? []
         };
 
     private static List<ProjectFieldChange> ChangedFields(Guid entryId,
@@ -293,21 +297,31 @@ public sealed class ProjectChangeStore
             ? heads.Select(head => head.ChangeId).ToList()
             : [Guid.Empty];
 
-    private static List<ProjectNoteLine> AddedNotes(string? before, string? after, DateTimeOffset now)
+    // An edited note is a removal of the old line plus a new line that remembers which note it replaces.
+    private static (List<ProjectNoteLine> Added, List<Guid> Removed) DiffNotes(
+        IReadOnlyList<NoteRef> before, string? after, DateTimeOffset now)
     {
-        var remaining = SplitNotes(before).GroupBy(line => line, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
+        var afterLines = SplitNotes(after);
         var added = new List<ProjectNoteLine>();
-        foreach (var line in SplitNotes(after))
+        var removed = new List<Guid>();
+        foreach (var edit in NoteLinesMerge.Diff(before.Select(note => note.Text).ToList(), afterLines))
         {
-            if (remaining.TryGetValue(line, out var count) && count > 0)
+            Guid? replaced = null;
+            if (edit.BaseIndex is { } baseIndex)
             {
-                remaining[line] = count - 1;
-                continue;
+                replaced = before[baseIndex].NoteId;
+                removed.Add(replaced.Value);
             }
-            added.Add(new ProjectNoteLine { Sequence = added.Count, SavedAtUtc = now, Author = Environment.UserName, Text = line });
+            if (edit.NewIndex is { } newIndex)
+            {
+                added.Add(new ProjectNoteLine
+                {
+                    Sequence = added.Count, SavedAtUtc = now, Author = Environment.UserName,
+                    Text = afterLines[newIndex], ReplacesNoteId = replaced
+                });
+            }
         }
-        return added;
+        return (added, removed);
     }
 
     private Snapshot Merge(TrackingProject baseline, string folder)
@@ -420,7 +434,7 @@ public sealed class ProjectChangeStore
                 var deletion = changes.First(change => change.ChangeId == head.ChangeId);
                 var unobserved = changes.Where(change => change.EntryId == entryId &&
                     change.ChangeId != deletion.ChangeId && !deletion.ObservedEntryChanges.Contains(change.ChangeId) &&
-                    (change.CreatedAtUtc is not null || change.Notes.Count > 0 ||
+                    (change.CreatedAtUtc is not null || change.Notes.Count > 0 || change.RemovedNoteIds.Count > 0 ||
                      change.Fields.Any(field => !string.Equals(field.Key, DeletedKey, StringComparison.OrdinalIgnoreCase))))
                     .OrderByDescending(change => change.SavedAtUtc).ThenByDescending(change => change.ChangeId).ToList();
                 if (unobserved.Count == 0) continue;
@@ -431,31 +445,17 @@ public sealed class ProjectChangeStore
             }
         }
 
+        var notesByEntry = new Dictionary<Guid, List<NoteRef>>();
         foreach (var entry in entries.Values)
         {
-            var notes = new List<(int LegacyIndex, ProjectNoteLine Line)>();
+            var entryChanges = changes.Where(change => change.EntryId == entry.EntryId).ToList();
             var baselineEntry = baseline.Entries.FirstOrDefault(item => item.EntryId == entry.EntryId);
-            if (baselineEntry is not null)
-            {
-                notes.AddRange(SplitNotes(baselineEntry.Values.GetValueOrDefault("notes"))
-                    .Select((text, index) => (index, new ProjectNoteLine
-                    {
-                        NoteId = Guid.Empty, SavedAtUtc = DateTimeOffset.MinValue,
-                        Author = "Desconocido", Text = text
-                    })));
-            }
-            notes.AddRange(changes.Where(change => change.EntryId == entry.EntryId)
-                .SelectMany(change => change.Notes).GroupBy(line => line.NoteId).Select(group => group.First())
-                .Select(line => (int.MaxValue, line)));
-            var ordered = notes.OrderBy(item => item.LegacyIndex).ThenBy(item => item.Line.SavedAtUtc)
-                .ThenBy(item => item.Line.Sequence).ThenBy(item => item.Line.NoteId)
-                .Select(item => item.Line.Text).ToList();
-            entry.Values["notes"] = ordered.Count == 0 ? null : string.Join(Environment.NewLine, ordered);
-            var latestNote = notes.Select(item => (DateTimeOffset?)item.Line.SavedAtUtc).Max();
-            if (latestNote is not null && latestNote != DateTimeOffset.MinValue)
-                entry.FieldModifiedAtUtc["notes"] = latestNote.Value;
-            var mostRecent = changes.Where(change => change.EntryId == entry.EntryId)
-                .Select(change => (DateTimeOffset?)change.SavedAtUtc).Max();
+            var visibleNotes = BuildVisibleNotes(entry.EntryId, baselineEntry, entryChanges, out var latestNoteChange);
+            notesByEntry[entry.EntryId] = visibleNotes;
+            entry.Values["notes"] = visibleNotes.Count == 0 ? null : string.Join(Environment.NewLine, visibleNotes.Select(note => note.Text));
+            if (latestNoteChange is not null)
+                entry.FieldModifiedAtUtc["notes"] = latestNoteChange.Value;
+            var mostRecent = entryChanges.Select(change => (DateTimeOffset?)change.SavedAtUtc).Max();
             if (mostRecent is not null) entry.UpdatedAtLocal = mostRecent.Value.LocalDateTime;
         }
 
@@ -466,7 +466,73 @@ public sealed class ProjectChangeStore
             .ThenBy(entry => entry.EntryId).ToList();
         for (var index = 0; index < project.Entries.Count; index++) project.Entries[index].EntryNumber = index + 1;
         if (changes.Count > 0) project.UpdatedAtLocal = changes.Max(change => change.SavedAtUtc).LocalDateTime;
-        return new Snapshot(project, headsByAddress, conflicts, knownIds, entryChangeIds);
+        return new Snapshot(project, headsByAddress, conflicts, knownIds, entryChangeIds, notesByEntry);
+    }
+
+    // Notes are append-only lines identified by NoteId; a change can hide earlier ones through RemovedNoteIds.
+    // Lines of the original JSON have no id on disk, so they get a stable one derived from their text.
+    private static List<NoteRef> BuildVisibleNotes(Guid entryId, TrackingEntry? baselineEntry,
+        IReadOnlyList<ProjectChange> entryChanges, out DateTimeOffset? latestChange)
+    {
+        var items = new List<NoteItem>();
+        if (baselineEntry is not null)
+        {
+            var occurrences = new Dictionary<string, int>(StringComparer.Ordinal);
+            var legacyTexts = SplitNotes(baselineEntry.Values.GetValueOrDefault("notes"));
+            for (var index = 0; index < legacyTexts.Count; index++)
+            {
+                var text = legacyTexts[index];
+                occurrences.TryGetValue(text, out var occurrence);
+                occurrences[text] = occurrence + 1;
+                items.Add(new NoteItem(new ProjectNoteLine
+                {
+                    NoteId = LegacyNoteId(entryId, text, occurrence), SavedAtUtc = DateTimeOffset.MinValue,
+                    Author = "Desconocido", Text = text
+                }, index));
+            }
+        }
+        items.AddRange(entryChanges.SelectMany(change => change.Notes).GroupBy(line => line.NoteId)
+            .Select(group => new NoteItem(group.First(), int.MaxValue)));
+
+        var removed = entryChanges.SelectMany(change => change.RemovedNoteIds).ToHashSet();
+        // Two computers editing the same note: the most recent edited version prevails.
+        foreach (var edits in items.Where(item => item.Line.ReplacesNoteId is not null)
+                     .GroupBy(item => item.Line.ReplacesNoteId!.Value))
+        {
+            foreach (var superseded in edits.OrderByDescending(item => item.Line.SavedAtUtc)
+                         .ThenByDescending(item => item.Line.Sequence).ThenByDescending(item => item.Line.NoteId).Skip(1))
+                removed.Add(superseded.Line.NoteId);
+        }
+
+        latestChange = items.Where(item => item.Line.SavedAtUtc != DateTimeOffset.MinValue)
+            .Select(item => (DateTimeOffset?)item.Line.SavedAtUtc)
+            .Concat(entryChanges.Where(change => change.RemovedNoteIds.Count > 0).Select(change => (DateTimeOffset?)change.SavedAtUtc))
+            .Max();
+
+        var byId = items.ToDictionary(item => item.Line.NoteId);
+        // An edited note keeps the position of the note it replaces.
+        NoteItem PositionOf(NoteItem item)
+        {
+            var visited = new HashSet<Guid>();
+            while (item.Line.ReplacesNoteId is { } replaced && visited.Add(item.Line.NoteId) &&
+                   byId.TryGetValue(replaced, out var previous))
+                item = previous;
+            return item;
+        }
+
+        return items.Where(item => !removed.Contains(item.Line.NoteId))
+            .Select(item => (Item: item, Position: PositionOf(item)))
+            .OrderBy(pair => pair.Position.LegacyIndex).ThenBy(pair => pair.Position.Line.SavedAtUtc)
+            .ThenBy(pair => pair.Position.Line.Sequence).ThenBy(pair => pair.Position.Line.NoteId)
+            .ThenBy(pair => pair.Item.Line.SavedAtUtc).ThenBy(pair => pair.Item.Line.Sequence)
+            .ThenBy(pair => pair.Item.Line.NoteId)
+            .Select(pair => new NoteRef(pair.Item.Line.NoteId, pair.Item.Line.Text)).ToList();
+    }
+
+    private static Guid LegacyNoteId(Guid entryId, string text, int occurrence)
+    {
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes($"{entryId:N}:{occurrence}:{text}:legacy-note"));
+        return new Guid(digest[..16]);
     }
 
     private static (Guid, string) Address(Guid entryId, string key) => (entryId, key.ToLowerInvariant());
@@ -511,7 +577,7 @@ public sealed class ProjectChangeStore
                 ?? throw new InvalidDataException($"Cambio vacío: {path}");
             if (batch.ProjectId != projectId || batch.BatchId == Guid.Empty || batch.Changes is null ||
                 batch.Changes.Any(change => change is null || change.ProjectId != projectId || change.ChangeId == Guid.Empty ||
-                    change.Fields is null || change.Notes is null || change.ObservedEntryChanges is null ||
+                    change.Fields is null || change.Notes is null || change.ObservedEntryChanges is null || change.RemovedNoteIds is null ||
                     change.Fields.Any(field => field is null || string.IsNullOrWhiteSpace(field.Key) || field.Supersedes is null) ||
                     change.Notes.Any(note => note is null || note.NoteId == Guid.Empty || note.Text is null)))
                 throw new InvalidDataException($"Cambio incompatible: {path}");
@@ -631,8 +697,13 @@ public sealed class ProjectChangeStore
     private static ProjectMergeResult ToResult(Snapshot snapshot, int incorporated) =>
         new(snapshot.Project, snapshot.Conflicts, incorporated);
 
+    private sealed record NoteRef(Guid NoteId, string Text);
+
+    private sealed record NoteItem(ProjectNoteLine Line, int LegacyIndex);
+
     private sealed record Snapshot(TrackingProject Project,
         Dictionary<(Guid, string), List<ProjectFieldCandidate>> Heads,
         List<ProjectFieldConflict> Conflicts, HashSet<Guid> ChangeIds,
-        Dictionary<Guid, HashSet<Guid>> EntryChangeIds);
+        Dictionary<Guid, HashSet<Guid>> EntryChangeIds,
+        Dictionary<Guid, List<NoteRef>> Notes);
 }

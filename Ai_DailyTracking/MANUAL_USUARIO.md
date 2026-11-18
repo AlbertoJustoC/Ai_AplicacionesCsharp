@@ -47,11 +47,12 @@ Ai_DailyTracking\bin\Release\net8.0-windows\Ai_DailyTracking.exe
 1. Rellena los campos de la ficha (Disciplina, Area, Paquete, Estado, Actividad, Notas, etc.).
 2. Cuando cambies un campo, se ilumina **Guardar registro**. Púlsalo para grabar el cambio con autor, fecha y hora. Si cambias de registro, proyecto o cierras con cambios pendientes, la aplicación pregunta si quieres guardar, descartar o cancelar.
 3. Los cuadros de texto largo (Actividad, Notas) se pueden arrastrar desde el borde inferior para hacerlos mas grandes.
+4. Los desplegables (proyecto, Disciplina, Area, Estado, etc.) no cambian con la rueda del raton, asi que puedes desplazar la ficha sin modificar ningun valor por error. Para elegir una opcion abre la lista con la flecha; en los campos de lista editable tambien puedes escribir un valor nuevo.
 
 ### Fusionar cambios de otros usuarios
 - Al abrir un proyecto, la aplicación avisa si detecta otros usuarios activos en los archivos de presencia ya sincronizados. Este aviso es informativo y no bloquea la edición. Si la sincronización se retrasa, el aviso también puede retrasarse.
 - La aplicación incorpora los cambios que ya estén sincronizados al abrir, guardar un registro y cerrar. También puedes pulsar **Fusionar**.
-- Si dos personas cambian el mismo campo de un registro, se muestran ambos valores y autores para elegir. Las Notas se reúnen como líneas añadidas: borrar o reescribir una línea anterior no elimina su versión histórica. Para Carpeta y ruta MD se conserva el cambio de ruta con fecha posterior.
+- Si dos personas cambian el mismo campo de un registro, se muestran ambos valores y autores para elegir. Las Notas se fusionan línea a línea sin preguntar: añadir, editar o borrar una nota se propaga a los demás equipos, y si dos personas editan la misma nota prevalece la edición más reciente. Para Carpeta y ruta MD se conserva el cambio de ruta con fecha posterior.
 - "Guardado localmente" confirma la escritura en este PC, no que OneDrive haya terminado de sincronizar. Los cambios que lleguen más tarde se incorporarán en la siguiente fusión.
 
 ### Consultar el historico
@@ -81,9 +82,23 @@ Las rutas guardadas bajo `C:\Users\<usuario>` se adaptan automáticamente al per
 
 ### Ver el grafico de evolucion
 - Abre el grafico de seguimiento para ver las entradas acumuladas por dia, agrupadas por el campo que elijas (por ejemplo, Estado o Disciplina).
+- El boton "Ver lineas de tiempo" muestra una linea por registro, con un punto por cada nota. La linea empieza en la primera fecha de sus Notas y su trazo continuo termina cuando el Estado pasa a "Hecho". Si el registro esta "Cerrado", una linea fina de puntos continua hasta la nota "Cerrado" (si nunca estuvo en "Hecho", el trazo continuo llega hasta la ultima nota anterior al cierre). Los registros que aun no estan en "Hecho" ni "Cerrado" llegan hasta su ultima nota o "Ultimo cambio". El boton "Ver grafico acumulado" vuelve al grafico por dia.
 
 ### Exportar una ficha a Markdown
 - Desde la ficha de una entrada, usa la opcion de exportar a Markdown para generar un archivo `.md` con el contenido de esa entrada (util para pegar en otras herramientas).
+
+### Editar o borrar notas (ficha y Markdown)
+- Puedes editar o borrar cualquier nota en el campo **Notas** de la ficha (una nota por linea) y pulsar **Guardar registro**: el cambio queda en el proyecto y, al pulsar **Actualizar MD** (o aceptar la actualizacion de los `.md` al cambiar de proyecto o cerrar), tambien en el archivo `.md`.
+- Tambien puedes editar o borrar notas directamente en la seccion `## Notas` del `.md`: al abrir o cambiar de ficha, al guardar y al pulsar **Actualizar MD**, esos cambios aparecen en el campo Notas de la ficha (queda como cambio sin guardar hasta que guardes el registro).
+- Si cambias la misma nota en la ficha y en el `.md`, prevalece la ultima actualizacion. Si cambias notas distintas, se conservan ambos cambios.
+- Si la seccion `## Notas` del `.md` esta vacia, la aplicacion no borra las notas de la ficha: las vuelve a escribir en el `.md` al actualizarlo.
+
+### Insertar un enlace a un correo de Outlook o a un mensaje de Teams
+1. Copia el enlace: en Teams, sobre el mensaje, `⋯` -> **Copiar vinculo**; para un correo, abre el mensaje en Outlook web (`outlook.cloud.microsoft`), en su propia ventana, y copia la URL de la barra de direcciones. Con el nuevo Outlook de escritorio la aplicacion no puede leer el correo seleccionado, por eso el enlace se copia a mano.
+2. En la ficha, coloca el cursor en la nota y pulsa **Insertar enlace (Ctrl+K)** (si seleccionas antes una palabra de la nota, esa palabra se propone como titulo). Elige el texto que se mostrara (por defecto "Correo" o "Teams") y pulsa **Insertar**.
+3. El enlace se ve con el titulo en azul subrayado y la URL en gris pequeno. **Ctrl+clic** (o doble clic) sobre el enlace lo abre: Teams en la aplicacion de Teams y el correo en el navegador.
+4. El enlace es parte de la nota: se puede editar o borrar como cualquier otra, viaja al `.md` como `[titulo](url)` (en Obsidian se ve pulsable) y en el informe PDF se imprime solo el titulo en azul.
+- Un enlace de correo solo lo abre quien tiene acceso a ese buzon, y uno de Teams quien participa en el chat o canal. Solo se abren enlaces `http`, `https`, `mailto` y `msteams`.
 
 ## 7. Donde quedan mis datos
 - Proyectos: `%AppData%\AiDailyTracking\Projects\` (o la carpeta compartida que hayas elegido).

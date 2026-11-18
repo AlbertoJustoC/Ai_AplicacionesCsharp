@@ -461,7 +461,7 @@ public sealed class TrackingChartForm : Form
 
     private sealed class FieldFilterControls
     {
-        public ComboBox FieldCombo { get; } = new();
+        public NoWheelComboBox FieldCombo { get; } = new();
         public Button OptionsButton { get; } = new();
         public ContextMenuStrip OptionsMenu { get; } = new();
     }

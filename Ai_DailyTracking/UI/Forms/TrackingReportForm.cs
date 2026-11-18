@@ -618,7 +618,7 @@ public sealed class TrackingReportForm : Form
     // Holds the field selector + checkbox-options dropdown for one AND filter row.
     private sealed class FieldFilterControls
     {
-        public ComboBox FieldCombo { get; } = new();
+        public NoWheelComboBox FieldCombo { get; } = new();
 
         public Button OptionsButton { get; } = new();
 

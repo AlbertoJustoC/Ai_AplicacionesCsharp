@@ -58,7 +58,7 @@ public sealed class TrackingTimelinePanel : Panel
         {
             var firstDate = _rows.SelectMany(row => row.Notes.Select(note => note.Timestamp.Date).Append(row.Start.Date)).Min();
             _axisStart = firstDate.AddDays(-((int)firstDate.DayOfWeek + 6) % 7);
-            _axisEnd = _rows.SelectMany(row => row.Notes.Select(note => note.Timestamp.Date).Append(row.End.Date)).Max();
+            _axisEnd = _rows.SelectMany(row => row.Notes.Select(note => note.Timestamp.Date).Append((row.ClosedAt ?? row.End).Date)).Max();
             _layouts.Clear();
             var top = PlotTop;
             foreach (var row in _rows)
@@ -143,7 +143,8 @@ public sealed class TrackingTimelinePanel : Panel
             return;
         }
 
-        g.DrawString("Cada día: 08:00–17:00  ·  Los puntos muestran las notas", labelFont, labelBrush, 14, 40);
+        var closedLegend = _rows.Any(row => row.ClosedAt is not null) ? "  ·  Línea de puntos: hasta «Cerrado»" : string.Empty;
+        g.DrawString("Cada día: 08:00–17:00  ·  Los puntos muestran las notas" + closedLegend, labelFont, labelBrush, 14, 40);
         g.DrawString("ID", boldFont, labelBrush, 22, PlotTop - 28);
 
         var bottom = _layouts[^1].Top + _layouts[^1].Height;
@@ -175,6 +176,12 @@ public sealed class TrackingTimelinePanel : Panel
             var startX = Map(row.Start);
             var endX = Map(row.End);
             g.DrawLine(linePen, Math.Min(startX, endX), y, Math.Max(startX, endX), y);
+
+            if (row.ClosedAt is { } closedAt && closedAt > row.End)
+            {
+                using var closedPen = new Pen(color, 2F) { DashStyle = DashStyle.Dot };
+                g.DrawLine(closedPen, endX, y, Map(closedAt), y);
+            }
 
             var laneCount = layout.Markers.Count == 0 ? 1 : layout.Markers.Max(marker => marker.Lane) + 1;
             foreach (var marker in layout.Markers)
@@ -227,7 +234,7 @@ public sealed class TrackingTimelinePanel : Panel
             }
         }
 
-        if (Math.Abs(y - rowY) <= 7 && x >= Map(row.Start) - 5 && x <= Map(row.End) + 5)
+        if (Math.Abs(y - rowY) <= 7 && x >= Map(row.Start) - 5 && x <= Map(row.ClosedAt ?? row.End) + 5)
         {
             ShowHover($"{index}:line", row.Summary, e.Location);
             return;

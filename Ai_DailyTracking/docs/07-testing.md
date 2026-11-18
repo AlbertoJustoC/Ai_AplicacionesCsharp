@@ -38,3 +38,5 @@ Tras cualquier cambio relevante:
 4. Eliminar un registro y confirmar que la app no se rompe si el proyecto se queda sin registros.
 5. Abrir el panel grafico, cambiar el "Agrupar por", aplicar filtros y el rango de fechas, y confirmar que el grafico se actualiza sin errores.
 6. Cerrar y volver a abrir la aplicacion para confirmar que reabre el ultimo proyecto usado sin errores (caso historico de bug, ver `docs/08-troubleshooting.md`).
+7. Notas bidireccionales: en una ficha con `.md` vinculado, borrar y editar una nota en la ficha, guardar y pulsar "Actualizar MD" (el `.md` debe reflejar ambos cambios); despues editar y borrar una nota en el `.md`, volver a seleccionar la ficha (o guardar) y comprobar que el campo Notas lo refleja y que ninguna nota vieja reaparece.
+8. Enlaces en Notas: copiar el enlace de un mensaje de Teams y el de un correo en Outlook web, pulsar "Insertar enlace (Ctrl+K)" en la ficha y confirmar que el enlace aparece (titulo azul, URL gris), que Ctrl+clic lo abre, que "Actualizar MD" lo escribe como `[titulo](url)` en el `.md`, y que un texto que no es un enlace (o `file:///...`) muestra el aviso y no se inserta.

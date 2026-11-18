@@ -14,8 +14,9 @@ Aplicacion de escritorio (WinForms, .NET 8) para el seguimiento diario de tareas
 - Gestion de proyectos: crear, eliminar, elegir "carpeta de proyectos" compartida (para que varias personas lean/escriban desde la misma ruta de red) y ver/editar los usuarios del proyecto.
 - "Crear Informe": ventana con hasta 3 filtros por campo combinables (AND), filtro por rango de fechas, grafico de barras y exportacion a PDF (tamano A3, con grafico acumulado y linea de tiempo al final).
 - El PDF conserva el orden de los registros visible en la tabla al pulsar "Crear PDF (A3)", tras ordenar por cualquier columna en sentido ascendente o descendente.
-- Grafico dedicado (`TrackingChartForm`) de entradas acumuladas por dia, agrupado por el campo que se elija.
-- Exportacion de una ficha concreta a Markdown y vinculo opcional a una "Carpeta Documentacion" por entrada.
+- Grafico dedicado (`TrackingChartForm`) de entradas acumuladas por dia, agrupado por el campo que se elija, y vista de lineas de tiempo (una linea por registro: empieza en la primera nota, el trazo continuo termina en "Hecho" y un trazo fino de puntos llega hasta "Cerrado").
+- Los desplegables ignoran la rueda del raton (`NoWheelComboBox`): el valor solo cambia abriendo la lista o escribiendo un valor nuevo.
+- Exportacion de una ficha concreta a Markdown y vinculo opcional a una "Carpeta Documentacion" por entrada. Las Notas se sincronizan en ambos sentidos entre la ficha, el proyecto y el `.md` (editar o borrar vale en todos; prevalece la ultima actualizacion). Se pueden insertar en las Notas enlaces a un correo de Outlook (Outlook web) o a un mensaje de Teams, que se abren con Ctrl+clic.
 - Rutas compartidas adaptadas al perfil de Windows actual; si no existe el destino, se puede localizar desde una carpeta raíz y recordar la correspondencia en ese PC.
 - Copia de seguridad automatica del proyecto activo al cerrar la aplicacion.
 

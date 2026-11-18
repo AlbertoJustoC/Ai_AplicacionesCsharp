@@ -315,7 +315,7 @@ public sealed class TrackingReportPdfExporter
         return graphics.MeasureString("a a", font, PointF.Empty, format).Width - graphics.MeasureString("aa", font, PointF.Empty, format).Width;
     }
 
-    // Same coloring as the ficha notes editor: red timestamp, status in its option color (only when it is a known option).
+    // Same coloring as the ficha notes editor: red timestamp, blue link title, status in its option color (only when it is a known option).
     private Color GetNoteSegmentColor(NoteSegment segment)
     {
         if (segment.Kind == NoteSegmentKind.Timestamp)
@@ -323,6 +323,10 @@ public sealed class TrackingReportPdfExporter
             return Color.Red;
         }
 
+        if (segment.Kind == NoteSegmentKind.Link)
+        {
+            return Color.FromArgb(0, 102, 204);
+        }
         if (segment.Kind == NoteSegmentKind.Status && _statusField is not null)
         {
             var knownStatus = _statusField.Options.FirstOrDefault(option => string.Equals(option, segment.Text, StringComparison.OrdinalIgnoreCase));

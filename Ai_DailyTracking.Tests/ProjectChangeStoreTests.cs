@@ -231,6 +231,77 @@ public sealed class ProjectChangeStoreTests
         Assert.Null(first.CreatedAtUtc);
     }
 
+    [Fact]
+    public void A_deleted_note_stays_deleted_after_saving_and_reopening()
+    {
+        using var fixture = new Fixture();
+        var initial = fixture.NewProject(fixture.NewEntry("Original", 1));
+        initial.Entries[0].Values["notes"] = "Primera\nSegunda\nTercera";
+        var project = fixture.First.Create(initial, fixture.SharedFolder).Project;
+        project.Entries[0].Values["notes"] = "Primera\nTercera";
+
+        var saved = fixture.First.Save(project, fixture.SharedFolder).Project;
+        var reopened = fixture.Second.Open(initial.ProjectId, fixture.SharedFolder)!.Project;
+
+        Assert.Equal(["Primera", "Tercera"], saved.Entries[0].Values["notes"]!.Split(Environment.NewLine));
+        Assert.Equal(["Primera", "Tercera"], reopened.Entries[0].Values["notes"]!.Split(Environment.NewLine));
+    }
+
+    [Fact]
+    public void An_edited_note_keeps_its_position_and_drops_the_old_text()
+    {
+        using var fixture = new Fixture();
+        var initial = fixture.NewProject(fixture.NewEntry("Original", 1));
+        initial.Entries[0].Values["notes"] = "Primera\nSegunda\nTercera";
+        var project = fixture.First.Create(initial, fixture.SharedFolder).Project;
+        project.Entries[0].Values["notes"] = "Primera\nSegunda corregida\nTercera";
+        var saved = fixture.First.Save(project, fixture.SharedFolder).Project;
+
+        saved.Entries[0].Values["notes"] = "Primera\nSegunda corregida otra vez\nTercera\nCuarta";
+        var edited = fixture.First.Save(saved, fixture.SharedFolder).Project;
+
+        Assert.Equal(["Primera", "Segunda corregida otra vez", "Tercera", "Cuarta"],
+            edited.Entries[0].Values["notes"]!.Split(Environment.NewLine));
+    }
+
+    [Fact]
+    public void A_note_deleted_on_one_computer_disappears_on_the_other()
+    {
+        using var fixture = new Fixture();
+        var initial = fixture.NewProject(fixture.NewEntry("Original", 1));
+        initial.Entries[0].Values["notes"] = "Primera\nSegunda";
+        var first = fixture.First.Create(initial, fixture.SharedFolder).Project;
+        var second = fixture.Second.Open(initial.ProjectId, fixture.SharedFolder)!.Project;
+        first.Entries[0].Values["notes"] = "Primera";
+        fixture.First.Save(first, fixture.SharedFolder);
+        second.Entries[0].Values["priority"] = "Alta";
+
+        var merged = fixture.Second.Save(second, fixture.SharedFolder);
+
+        Assert.Empty(merged.Conflicts);
+        var entry = Assert.Single(merged.Project.Entries);
+        Assert.Equal("Primera", entry.Values["notes"]);
+        Assert.Equal("Alta", entry.Values["priority"]);
+    }
+
+    [Fact]
+    public void When_two_computers_edit_the_same_note_the_most_recent_edit_wins()
+    {
+        using var fixture = new Fixture();
+        var initial = fixture.NewProject(fixture.NewEntry("Original", 1));
+        initial.Entries[0].Values["notes"] = "Primera\nSegunda";
+        var first = fixture.First.Create(initial, fixture.SharedFolder).Project;
+        var second = fixture.Second.Open(initial.ProjectId, fixture.SharedFolder)!.Project;
+        first.Entries[0].Values["notes"] = "Primera\nSegunda de A";
+        second.Entries[0].Values["notes"] = "Primera\nSegunda de B";
+
+        fixture.First.Save(first, fixture.SharedFolder);
+        Thread.Sleep(20);
+        var merged = fixture.Second.Save(second, fixture.SharedFolder);
+
+        Assert.Equal(["Primera", "Segunda de B"], merged.Project.Entries[0].Values["notes"]!.Split(Environment.NewLine));
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(), "AiDailyTrackingChanges-" + Guid.NewGuid().ToString("N"));

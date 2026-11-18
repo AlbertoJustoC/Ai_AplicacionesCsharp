@@ -5,20 +5,30 @@ using Ai_DailyTracking.Domain.Models;
 
 namespace Ai_DailyTracking.Application.Services;
 
-public sealed record TrackingTimelineNote(DateTime Timestamp, string Text);
+// Status is the leading "**Estado**" marker of the note, or null when the note has none.
+public sealed record TrackingTimelineNote(DateTime Timestamp, string Text, string? Status = null);
 
+// End is where the solid line stops; ClosedAt, when set, is where a thin dotted line continues to (the "Cerrado" note).
 public sealed record TrackingTimelineRow(
     int EntryNumber,
     DateTime Start,
     DateTime End,
     string Status,
     string Summary,
-    IReadOnlyList<TrackingTimelineNote> Notes);
+    IReadOnlyList<TrackingTimelineNote> Notes,
+    DateTime? ClosedAt = null);
 
 public static class TrackingTimelineBuilder
 {
+    private const string DoneStatus = "Hecho";
+    private const string ClosedStatus = "Cerrado";
+
     private static readonly Regex NoteStart = new(
         @"^\s*\[(?<date>\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]\s*(?<text>.*)$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex LeadingStatus = new(
+        @"^\*\*(?<status>[^*\r\n]+)\*\*",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public static IReadOnlyList<TrackingTimelineRow> Build(
@@ -33,17 +43,8 @@ public static class TrackingTimelineBuilder
     private static TrackingTimelineRow BuildRow(TrackingEntry entry, TrackingFormSchema schema, string dateFieldKey)
     {
         var notes = ParseNotes(GetValue(entry, "notes"));
-        var start = ReadDate(entry, dateFieldKey) ?? entry.CreatedAtLocal.Date;
-        var updated = ReadDate(entry, "updatedDate") ?? entry.UpdatedAtLocal.Date;
-        var lastNote = notes.Count == 0 ? (DateTime?)null : notes.Max(note => note.Timestamp);
-        var end = updated.Date == lastNote?.Date
-            ? lastNote.Value
-            : updated.Date.AddHours(17);
-
-        if (lastNote is not null && lastNote.Value.Date > end.Date)
-            end = lastNote.Value;
-        if (end.Date < start.Date)
-            end = start.Date.AddHours(17);
+        var status = GetValue(entry, "status") ?? string.Empty;
+        var (start, end, closedAt) = ResolveSpan(entry, notes, status, dateFieldKey);
 
         var summary = new StringBuilder($"Registro #{entry.EntryNumber}");
         summary.AppendLine().Append("ID interno: ").Append(entry.EntryId);
@@ -58,9 +59,77 @@ public static class TrackingTimelineBuilder
             summary.AppendLine().Append(pair.Key).Append(": ")
                 .Append(string.IsNullOrWhiteSpace(pair.Value) ? "(vacío)" : pair.Value);
 
-        return new TrackingTimelineRow(entry.EntryNumber, start.Date.AddHours(8), end,
-            GetValue(entry, "status") ?? string.Empty, summary.ToString(), notes);
+        return new TrackingTimelineRow(entry.EntryNumber, start, end, status, summary.ToString(), notes, closedAt);
     }
+
+    // First note -> "Hecho" note; a "Cerrado" record adds a dotted span to its closing note; anything else ends at the last change.
+    private static (DateTime Start, DateTime End, DateTime? ClosedAt) ResolveSpan(
+        TrackingEntry entry,
+        IReadOnlyList<TrackingTimelineNote> notes,
+        string status,
+        string dateFieldKey)
+    {
+        var recordDate = ReadDate(entry, dateFieldKey) ?? entry.CreatedAtLocal.Date;
+        var updated = ReadDate(entry, "updatedDate") ?? entry.UpdatedAtLocal.Date;
+        var lastNote = notes.Count == 0 ? (DateTime?)null : notes[^1].Timestamp;
+
+        var start = notes.Count == 0 ? recordDate.AddHours(8) : notes[0].Timestamp;
+        var end = updated == lastNote?.Date
+            ? lastNote.Value
+            : updated.AddHours(17);
+
+        if (lastNote is not null && lastNote.Value.Date > end.Date)
+            end = lastNote.Value;
+        if (end.Date < start.Date)
+            end = start.Date.AddHours(17);
+
+        var statuses = CarryStatusesForward(notes);
+
+        if (statuses.Count > 0 && IsStatus(status, DoneStatus))
+        {
+            var doneIndex = statuses.FindLastIndex(noteStatus => IsStatus(noteStatus, DoneStatus));
+            return doneIndex < 0 ? (start, end, null) : (start, notes[StartOfDoneRun(statuses, doneIndex)].Timestamp, null);
+        }
+
+        if (statuses.Count > 0 && IsStatus(status, ClosedStatus) && IsStatus(statuses[^1], ClosedStatus))
+        {
+            var openIndex = statuses.FindLastIndex(noteStatus => !IsStatus(noteStatus, ClosedStatus));
+            var solidIndex = openIndex >= 0 && IsStatus(statuses[openIndex], DoneStatus) ? StartOfDoneRun(statuses, openIndex) : openIndex;
+            var solidEnd = solidIndex < 0 ? start : notes[solidIndex].Timestamp;
+            return (start, solidEnd, notes[^1].Timestamp > solidEnd ? notes[^1].Timestamp : null);
+        }
+
+        return (start, end, null);
+    }
+
+    // Index of the note that made the record "Hecho", skipping the later "Hecho" notes that only add comments.
+    private static int StartOfDoneRun(List<string?> statuses, int lastDoneIndex)
+    {
+        var index = lastDoneIndex;
+
+        while (index > 0 && IsStatus(statuses[index - 1], DoneStatus))
+            index--;
+
+        return index;
+    }
+
+    // A note without its own status marker keeps the status of the previous note.
+    private static List<string?> CarryStatusesForward(IReadOnlyList<TrackingTimelineNote> notes)
+    {
+        var statuses = new List<string?>(notes.Count);
+        string? current = null;
+
+        foreach (var note in notes)
+        {
+            current = note.Status ?? current;
+            statuses.Add(current);
+        }
+
+        return statuses;
+    }
+
+    private static bool IsStatus(string? value, string status) =>
+        string.Equals(value?.Trim(), status, StringComparison.OrdinalIgnoreCase);
 
     public static IReadOnlyList<TrackingTimelineNote> ParseNotes(string? rawNotes)
     {
@@ -78,7 +147,7 @@ public static class TrackingTimelineBuilder
                     "yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
             {
                 if (timestamp is not null)
-                    result.Add(new TrackingTimelineNote(timestamp.Value, body.ToString().Trim()));
+                    result.Add(CreateNote(timestamp.Value, body.ToString()));
                 timestamp = parsed;
                 body.Clear().Append(match.Groups["text"].Value);
             }
@@ -89,8 +158,15 @@ public static class TrackingTimelineBuilder
         }
 
         if (timestamp is not null)
-            result.Add(new TrackingTimelineNote(timestamp.Value, body.ToString().Trim()));
+            result.Add(CreateNote(timestamp.Value, body.ToString()));
         return result.OrderBy(note => note.Timestamp).ToList();
+    }
+
+    private static TrackingTimelineNote CreateNote(DateTime timestamp, string body)
+    {
+        var text = body.Trim();
+        var match = LeadingStatus.Match(text);
+        return new TrackingTimelineNote(timestamp, text, match.Success ? match.Groups["status"].Value.Trim() : null);
     }
 
     public static double DayFraction(DateTime timestamp)

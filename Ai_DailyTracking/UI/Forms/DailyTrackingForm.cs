@@ -19,6 +19,7 @@ public sealed class DailyTrackingForm : Form
     private const string PriorityFieldKey = "priority";
     private const string UpdatedDateFieldKey = "updatedDate";
     private const string UpdatedDateAutoKey = "updatedDateAuto";
+    private const int NotesHeaderHeight = 28;
     private static readonly IReadOnlyDictionary<string, int> StatusRanks = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
     {
         ["Nuevo"] = 1,
@@ -55,7 +56,7 @@ public sealed class DailyTrackingForm : Form
     private readonly SharedPathService _sharedPathService;
     private readonly TrackingFormSchema _schema;
     private readonly Dictionary<string, Control> _fieldControls = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ComboBox _projectSelector = new();
+    private readonly NoWheelComboBox _projectSelector = new();
     private readonly FlowLayoutPanel _projectSelectorRow = new();
     private readonly Button _retryProjectButton = new();
     private readonly Button _newProjectButton = new();
@@ -86,12 +87,15 @@ public sealed class DailyTrackingForm : Form
     private readonly ToolTip _toolTip = new();
     private readonly System.Windows.Forms.Timer _presenceTimer = new() { Interval = 60_000 };
     private readonly HashSet<Guid> _announcedEditorSessions = [];
+    private readonly Dictionary<Guid, DateTimeOffset> _notesEditedAtUtc = [];
     private readonly TrackingFieldDefinition? _statusFieldDefinition;
     private readonly TrackingFieldDefinition? _priorityFieldDefinition;
 
     private bool _suppressEvents;
     private bool _suppressUpdatedDateAutoChanged;
     private bool _hasUnsavedChanges;
+    // True when the only unsaved change comes from pulling Markdown notes into the ficha on open.
+    private bool _dirtyFromMarkdownPull;
     private bool _pendingLongTextChanges;
     private int _pendingConflictCount;
     private TrackingProject? _currentProject;
@@ -603,6 +607,10 @@ public sealed class DailyTrackingForm : Form
         var editor = CreateEditorControl(field);
         editor.Tag = field.Key;
 
+        // The notes field gets an "insert link" button in its header row (same height as the plain label).
+        var header = editor is RichTextBox notesEditor && IsCommentsField(field)
+            ? CreateNotesHeader(label, notesEditor)
+            : label;
         if (IsUpdatedDateField(field))
         {
             card.Controls.Add(CreateUpdatedDateAutoToggle());
@@ -622,9 +630,45 @@ public sealed class DailyTrackingForm : Form
             card.Controls.Add(editor);
         }
 
-        card.Controls.Add(label);
+        card.Controls.Add(header);
         _fieldControls[field.Key] = editor;
         return card;
+    }
+
+    private Control CreateNotesHeader(Label label, RichTextBox notesTextBox)
+    {
+        var header = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = NotesHeaderHeight,
+            BackColor = Color.Transparent
+        };
+
+        var linkButton = new Button
+        {
+            Text = "Insertar enlace (Ctrl+K)",
+            Dock = DockStyle.Right,
+            AutoSize = false,
+            Width = 170,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.White,
+            ForeColor = Color.FromArgb(18, 103, 177),
+            Font = new Font("Segoe UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point),
+            Cursor = Cursors.Hand,
+            TabStop = false
+        };
+        linkButton.FlatAppearance.BorderColor = Color.FromArgb(18, 103, 177);
+        linkButton.Click += (_, _) => InsertLinkIntoNotes(notesTextBox);
+        _toolTip.SetToolTip(
+            linkButton,
+            "Pega en la nota el enlace de un correo de Outlook o de un mensaje de Teams copiado al portapapeles. Ctrl+clic sobre un enlace lo abre.");
+
+        label.Dock = DockStyle.Fill;
+        label.TextAlign = ContentAlignment.MiddleLeft;
+        // Fill-docked controls must be added before their Right sibling.
+        header.Controls.Add(label);
+        header.Controls.Add(linkButton);
+        return header;
     }
 
     private Control CreateFieldCardResizeGrip(Panel card, int minimumHeight)
@@ -688,7 +732,8 @@ public sealed class DailyTrackingForm : Form
 
         if (IsCommentsField(field))
         {
-            return 108;
+            // The notes header row is taller than a plain 20px label so the "insert link" button text is not clipped.
+            return 108 + NotesHeaderHeight - 20;
         }
 
         return 86;
@@ -718,7 +763,7 @@ public sealed class DailyTrackingForm : Form
                 return datePicker;
 
             case TrackingFieldType.Option:
-                var comboBox = new ComboBox
+                var comboBox = new NoWheelComboBox
                 {
                     Height = 34,
                     DropDownStyle = ComboBoxStyle.DropDownList
@@ -740,7 +785,7 @@ public sealed class DailyTrackingForm : Form
                 return comboBox;
 
             case TrackingFieldType.EditableOption:
-                var editableCombo = new ComboBox
+                var editableCombo = new NoWheelComboBox
                 {
                     Height = 34,
                     DropDownStyle = ComboBoxStyle.DropDown,
@@ -777,6 +822,9 @@ public sealed class DailyTrackingForm : Form
                     };
                     notesTextBox.KeyDown += CommentsTextBox_KeyDown;
                     notesTextBox.KeyPress += CommentsTextBox_KeyPress;
+                    notesTextBox.MouseUp += NotesTextBox_MouseUp;
+                    notesTextBox.MouseMove += NotesTextBox_MouseMove;
+                    notesTextBox.DoubleClick += NotesTextBox_DoubleClick;
                     // Colors are recalculated only when the field loses focus, not on every keystroke.
                     notesTextBox.Leave += (s, e) =>
                     {
@@ -1279,7 +1327,7 @@ public sealed class DailyTrackingForm : Form
             return false;
         }
 
-        if (!_markdownExporter.TryCreateOrUpdate(selectedFilePath, templatePath ?? string.Empty, _currentEntry, out var synchronizedNotesText, out var errorMessage))
+        if (!_markdownExporter.TryCreateOrUpdate(selectedFilePath, templatePath ?? string.Empty, _currentEntry, GetNotesModifiedAtUtc(_currentEntry), out var synchronizedNotesText, out var errorMessage))
         {
             MessageBox.Show(
                 this,
@@ -1588,13 +1636,159 @@ public sealed class DailyTrackingForm : Form
 
     private void CommentsTextBox_KeyDown(object? sender, KeyEventArgs e)
     {
-        if (sender is not RichTextBox textBox || e.KeyCode != Keys.Enter)
+        if (sender is not RichTextBox textBox)
+        {
+            return;
+        }
+
+        if (e.Control && e.KeyCode == Keys.K)
+        {
+            e.SuppressKeyPress = true;
+            InsertLinkIntoNotes(textBox);
+            return;
+        }
+
+        if (e.KeyCode != Keys.Enter)
         {
             return;
         }
 
         textBox.SelectedText = Environment.NewLine + BuildCommentPrefixWithCurrentStatus();
         e.SuppressKeyPress = true;
+    }
+
+    // Inserts "[title](url)" for the link on the clipboard (Outlook web message URL or Teams "Copiar vinculo")
+    // at the caret, replacing a single-line selection (which becomes the suggested title).
+    private void InsertLinkIntoNotes(RichTextBox notesTextBox)
+    {
+        if (_currentEntry is null)
+        {
+            return;
+        }
+
+        string? clipboardText = null;
+
+        try
+        {
+            clipboardText = Clipboard.ContainsText() ? Clipboard.GetText() : null;
+        }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+            // The clipboard is momentarily locked by another process: handled as "no link available".
+        }
+
+        if (!NoteLinkHelper.TryParseLink(clipboardText, out var link))
+        {
+            MessageBox.Show(
+                this,
+                "El portapapeles no contiene un enlace valido (http, https, mailto o msteams).\n\nCopia primero el enlace del mensaje de Teams (Copiar vinculo) o la URL del correo en Outlook web y vuelve a intentarlo.",
+                "Insertar enlace",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var selectedText = notesTextBox.SelectedText;
+        var selectionIsSingleLine = selectedText.Length > 0 && selectedText.IndexOfAny(['\r', '\n']) < 0;
+
+        if (!selectionIsSingleLine && selectedText.Length > 0)
+        {
+            // Never overwrite a multi-line selection: insert after it instead.
+            notesTextBox.Select(notesTextBox.SelectionStart + notesTextBox.SelectionLength, 0);
+        }
+
+        using var dialog = new InsertLinkDialog(link, selectionIsSingleLine ? selectedText.Trim() : NoteLinkHelper.DefaultTitle(link.Kind));
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        var markdownLink = NoteLinkHelper.BuildMarkdownLink(dialog.LinkTitle, link.Url);
+
+        if (ShouldInsertCommentPrefixAtCaret(notesTextBox))
+        {
+            markdownLink = BuildCommentPrefixWithCurrentStatus() + markdownLink;
+        }
+
+        notesTextBox.SelectedText = markdownLink;
+        notesTextBox.Focus();
+        ApplyNotesFormatting(notesTextBox);
+        CommitPendingLongTextChanges();
+    }
+
+    private void NotesTextBox_MouseUp(object? sender, MouseEventArgs e)
+    {
+        if (sender is RichTextBox notesTextBox && e.Button == MouseButtons.Left && ModifierKeys.HasFlag(Keys.Control))
+        {
+            TryOpenNoteLinkAt(notesTextBox, e.Location);
+        }
+    }
+
+    private void NotesTextBox_DoubleClick(object? sender, EventArgs e)
+    {
+        // Ctrl+click already opened it on MouseUp.
+        if (sender is RichTextBox notesTextBox && !ModifierKeys.HasFlag(Keys.Control))
+        {
+            TryOpenNoteLinkAt(notesTextBox, notesTextBox.PointToClient(Cursor.Position));
+        }
+    }
+
+    private void NotesTextBox_MouseMove(object? sender, MouseEventArgs e)
+    {
+        if (sender is RichTextBox notesTextBox)
+        {
+            notesTextBox.Cursor = ModifierKeys.HasFlag(Keys.Control) && FindNoteLinkAt(notesTextBox, e.Location) is not null
+                ? Cursors.Hand
+                : Cursors.IBeam;
+        }
+    }
+
+    private static NoteLinkSpan? FindNoteLinkAt(RichTextBox notesTextBox, Point location)
+    {
+        if (notesTextBox.TextLength == 0)
+        {
+            return null;
+        }
+
+        var charIndex = notesTextBox.GetCharIndexFromPosition(location);
+        var charPosition = notesTextBox.GetPositionFromCharIndex(charIndex);
+        var nextPosition = notesTextBox.GetPositionFromCharIndex(Math.Min(charIndex + 1, notesTextBox.TextLength));
+
+        // Clicking in the blank space after the end of a line reports that line's last character.
+        if (nextPosition.Y == charPosition.Y && location.X > nextPosition.X + 2)
+        {
+            return null;
+        }
+
+        return NoteLinkHelper.FindLinkAt(notesTextBox.Text, charIndex);
+    }
+
+    private void TryOpenNoteLinkAt(RichTextBox notesTextBox, Point location)
+    {
+        if (FindNoteLinkAt(notesTextBox, location) is { } link)
+        {
+            TryOpenLink(link.Url);
+        }
+    }
+
+    private void TryOpenLink(string url)
+    {
+        // Notes come from shared files, so only known-safe schemes are ever handed to the shell.
+        if (!NoteLinkHelper.IsAllowedUrl(url))
+        {
+            MessageBox.Show(this, "Solo se pueden abrir enlaces http, https, mailto y msteams.", "Abrir enlace", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo { FileName = url.Trim(), UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
+        {
+            MessageBox.Show(this, $"No se pudo abrir el enlace.\n\n{ex.Message}", "Abrir enlace", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private void CommentsTextBox_KeyPress(object? sender, KeyPressEventArgs e)
@@ -1638,6 +1832,7 @@ public sealed class DailyTrackingForm : Form
 
         notesTextBox.SelectAll();
         notesTextBox.SelectionColor = notesTextBox.ForeColor;
+        notesTextBox.SelectionFont = notesTextBox.Font;
 
         foreach (Match match in NoteTimestampRegex.Matches(notesTextBox.Text))
         {
@@ -1663,6 +1858,8 @@ public sealed class DailyTrackingForm : Form
             }
         }
 
+        ApplyNoteLinkFormatting(notesTextBox);
+
         notesTextBox.Select(
             Math.Min(selectionStart, notesTextBox.TextLength),
             Math.Min(selectionLength, Math.Max(0, notesTextBox.TextLength - selectionStart)));
@@ -1670,6 +1867,32 @@ public sealed class DailyTrackingForm : Form
         if (selectionLength == 0)
         {
             notesTextBox.SelectionColor = notesTextBox.ForeColor;
+            notesTextBox.SelectionFont = notesTextBox.Font;
+        }
+    }
+
+    // "[title](url)" links: title in blue and underlined, the long url in small gray text so it doesn't fill the note.
+    private static void ApplyNoteLinkFormatting(RichTextBox notesTextBox)
+    {
+        var links = NoteLinkHelper.FindLinks(notesTextBox.Text);
+
+        if (links.Count == 0)
+        {
+            return;
+        }
+
+        using var titleFont = new Font(notesTextBox.Font, FontStyle.Underline);
+        using var urlFont = new Font(notesTextBox.Font.FontFamily, Math.Max(6F, notesTextBox.Font.Size - 3F), FontStyle.Regular, GraphicsUnit.Point);
+
+        foreach (var link in links)
+        {
+            notesTextBox.Select(link.Index, link.TitleLength);
+            notesTextBox.SelectionColor = Color.FromArgb(0, 102, 204);
+            notesTextBox.SelectionFont = titleFont;
+
+            notesTextBox.Select(link.Index + link.TitleLength, link.Length - link.TitleLength);
+            notesTextBox.SelectionColor = Color.Gray;
+            notesTextBox.SelectionFont = urlFont;
         }
     }
 
@@ -1931,6 +2154,8 @@ public sealed class DailyTrackingForm : Form
     {
         _currentProject = project;
         _hasUnsavedChanges = false;
+        _dirtyFromMarkdownPull = false;
+        _markdownExporter.DiscardPendingNotesBases();
         RefreshEditableOptionItems(project);
         _assignedToFilterDropDown.SetOptions(project.Entries
             .Select(entry => GetFieldValue(entry, "assignedTo"))
@@ -1970,6 +2195,7 @@ public sealed class DailyTrackingForm : Form
         }
 
         _currentEntry = entry;
+        var notesPulledFromMarkdown = TryPullMarkdownNotes(entry);
         EnsureUpdatedDateAutoFlag(entry);
         _suppressEvents = true;
 
@@ -2026,6 +2252,13 @@ public sealed class DailyTrackingForm : Form
 
         _suppressEvents = false;
         _pendingLongTextChanges = false;
+
+        if (notesPulledFromMarkdown)
+        {
+            _hasUnsavedChanges = true;
+            _dirtyFromMarkdownPull = true;
+        }
+
         UpdateAutosaveLabel();
         SelectCurrentEntryInList();
     }
@@ -2113,6 +2346,47 @@ public sealed class DailyTrackingForm : Form
         return normalized.Replace("\n", Environment.NewLine, StringComparison.Ordinal);
     }
 
+    // Brings edits made in the entry's .md ("## Notas") into the ficha notes. Never prompts and never writes the .md.
+    private bool TryPullMarkdownNotes(TrackingEntry entry)
+    {
+        var storedPath = GetFieldValue(entry, MarkdownFilePathKey);
+
+        if (string.IsNullOrWhiteSpace(storedPath))
+        {
+            return false;
+        }
+
+        var markdownPath = _sharedPathService.Resolve(storedPath);
+
+        if (string.IsNullOrWhiteSpace(markdownPath) || !File.Exists(markdownPath))
+        {
+            return false;
+        }
+
+        if (!_markdownExporter.TryPullNotes(markdownPath, entry, GetNotesModifiedAtUtc(entry), out var mergedNotesText))
+        {
+            return false;
+        }
+
+        entry.Values[NotesFieldKey] = string.IsNullOrWhiteSpace(mergedNotesText) ? null : mergedNotesText;
+        return true;
+    }
+
+    private void PullMarkdownNotesIntoCurrentEntry()
+    {
+        if (_currentEntry is not null && TryPullMarkdownNotes(_currentEntry))
+        {
+            ApplySynchronizedNotesToCurrentEntry(GetFieldValue(_currentEntry, NotesFieldKey) ?? string.Empty);
+        }
+    }
+
+    private DateTimeOffset GetNotesModifiedAtUtc(TrackingEntry entry)
+    {
+        var savedAt = entry.FieldModifiedAtUtc.TryGetValue(NotesFieldKey, out var storedValue) ? storedValue : DateTimeOffset.MinValue;
+        var editedAt = _notesEditedAtUtc.TryGetValue(entry.EntryId, out var sessionValue) ? sessionValue : DateTimeOffset.MinValue;
+        return savedAt > editedAt ? savedAt : editedAt;
+    }
+
     private void EnsureInitialStatusNote(TrackingEntry entry)
     {
         var currentNotes = GetFieldValue(entry, NotesFieldKey);
@@ -2196,6 +2470,7 @@ public sealed class DailyTrackingForm : Form
             : currentNotes + Environment.NewLine + line;
 
         entry.Values[NotesFieldKey] = combinedNotes;
+        _notesEditedAtUtc[entry.EntryId] = DateTimeOffset.UtcNow;
 
         if (!_fieldControls.TryGetValue(NotesFieldKey, out var notesControl) || notesControl is not RichTextBox notesTextBox)
         {
@@ -2264,7 +2539,9 @@ public sealed class DailyTrackingForm : Form
         var selectedEntryId = _currentEntry?.EntryId;
         try
         {
+            PullMarkdownNotesIntoCurrentEntry();
             var merged = _workspaceService.SaveProject(_currentProject);
+            _markdownExporter.CommitPendingNotesBases();
             var incoming = merged.IncorporatedChanges;
             merged = ResolveConflicts(merged);
             LoadMergedProject(merged, selectedEntryId);
@@ -2310,7 +2587,7 @@ public sealed class DailyTrackingForm : Form
     private void HandleMergeAfterOpen(Guid? selectedEntryId = null)
     {
         ShowOtherEditorsNotice();
-        if (_hasUnsavedChanges) return;
+        if (_hasUnsavedChanges && !_dirtyFromMarkdownPull) return;
         var merged = _workspaceService.LastMergeResult;
         if (merged is null || merged.Project.ProjectId != _currentProject?.ProjectId) return;
         var incoming = merged.IncorporatedChanges;
@@ -2439,7 +2716,7 @@ public sealed class DailyTrackingForm : Form
                 continue;
             }
 
-            if (!_markdownExporter.TryCreateOrUpdate(markdownFilePath, templatePath ?? string.Empty, entry, out var synchronizedNotesText, out var errorMessage))
+            if (!_markdownExporter.TryCreateOrUpdate(markdownFilePath, templatePath ?? string.Empty, entry, GetNotesModifiedAtUtc(entry), out var synchronizedNotesText, out var errorMessage))
             {
                 errors.Add($"Tarea #{entry.EntryNumber}: {errorMessage}");
                 continue;
@@ -2817,6 +3094,11 @@ public sealed class DailyTrackingForm : Form
 
     private void LongTextValueChanged(object? sender, EventArgs e)
     {
+        if (!_suppressEvents && _currentEntry is not null && sender is RichTextBox)
+        {
+            _notesEditedAtUtc[_currentEntry.EntryId] = DateTimeOffset.UtcNow;
+        }
+
         if (_suppressEvents || _currentEntry is null || _pendingLongTextChanges)
         {
             return;

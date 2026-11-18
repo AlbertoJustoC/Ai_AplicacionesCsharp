@@ -6,7 +6,8 @@ public enum NoteSegmentKind
 {
     Text,
     Timestamp,
-    Status
+    Status,
+    Link
 }
 
 public readonly record struct NoteSegment(NoteSegmentKind Kind, string Text);
@@ -16,7 +17,7 @@ public readonly record struct NoteSegment(NoteSegmentKind Kind, string Text);
 public static class NoteLineParser
 {
     private static readonly Regex TokenRegex = new(
-        @"(?<timestamp>\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\])|\*\*(?<status>[^*\r\n]+)\*\*",
+        $@"(?<link>{NoteLinkHelper.LinkPattern})|(?<timestamp>\[\d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}\])|\*\*(?<status>[^*\r\n]+)\*\*",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public static IReadOnlyList<string> SplitLines(string? notesText)
@@ -26,7 +27,8 @@ public static class NoteLineParser
             : notesText.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
-    // The status segment text is returned without its surrounding "**" markers.
+    // The status segment text is returned without its surrounding "**" markers, and a link segment carries only
+    // its title (the url is dropped) so printed notes stay readable.
     public static IReadOnlyList<NoteSegment> Parse(string line)
     {
         var segments = new List<NoteSegment>();
@@ -39,9 +41,18 @@ public static class NoteLineParser
                 segments.Add(new NoteSegment(NoteSegmentKind.Text, line[position..match.Index]));
             }
 
-            segments.Add(match.Groups["timestamp"].Success
-                ? new NoteSegment(NoteSegmentKind.Timestamp, match.Value)
-                : new NoteSegment(NoteSegmentKind.Status, match.Groups["status"].Value.Trim()));
+            if (match.Groups["link"].Success)
+            {
+                var title = match.Groups["title"].Value.Trim();
+                segments.Add(new NoteSegment(NoteSegmentKind.Link,
+                    title.Length > 0 ? title : NoteLinkHelper.DefaultTitle(NoteLinkHelper.Classify(match.Groups["url"].Value))));
+            }
+            else
+            {
+                segments.Add(match.Groups["timestamp"].Success
+                    ? new NoteSegment(NoteSegmentKind.Timestamp, match.Value)
+                    : new NoteSegment(NoteSegmentKind.Status, match.Groups["status"].Value.Trim()));
+            }
 
             position = match.Index + match.Length;
         }
